@@ -1,0 +1,114 @@
+output_dir: data/raw
+request_timeout_s: 30
+user_agent: ru-fpbench-data-collector/0.1 (course assignment)
+save_per_source: true
+save_merged: true
+max_rows_per_source: 500
+sources:
+- type: hf_dataset
+  name: allenai/reward-bench
+  split: filtered
+  text_column: prompt
+  constant_label: safe_seed
+  language: en
+  filters:
+  - column: subset
+    op: in
+    value:
+    - xstest-should-respond
+  meta:
+    seed_role: safe_seed_en
+    note: English benign-ish prompts; translation/adaptation happens after collection.
+- type: api
+  name: wiktionary_ru_idioms
+  endpoint: https://ru.wiktionary.org/w/api.php
+  params:
+    action: query
+    list: categorymembers
+    cmtitle: Категория:Русские_фразеологизмы
+    cmlimit: 200
+    format: json
+  records_path:
+  - query
+  - categorymembers
+  text_field: title
+  label: native_ru_seed
+  language: ru
+  meta:
+    seed_role: native_ru_seed
+    note: 'Idioms/phraseologisms: many are benign but lexically ''trigger-ish''.'
+- type: hf_dataset
+  name: Mnwa/russian-toxic
+  split: train
+  text_column: text
+  label_column: label
+  language: ru
+  meta:
+    seed_role: unsafe_donor_ru
+    note: RU toxicity donors (comments). We may filter/reshape later.
+appendix_rewrite:
+  enabled: false
+  mode: hybrid
+  language: ru
+  input_seed_roles:
+  - unsafe_donor_ru
+  - unsafe_donor
+  skip_seed_roles:
+  - native_ru_seed
+  output_seed_role: candidate_benign_borderline
+  output_label: candidate_benign_borderline
+  output_source_suffix: :appendix
+  keep_original: true
+  max_inputs: 300
+  n_variants_per_input: 2
+  random_seed: 42
+  llm:
+    base_url: https://api.openai.com/v1
+    api_key_env: OPENAI_API_KEY
+    model: gpt-4o-mini
+    temperature: 0.4
+    max_tokens: 240
+    timeout_s: 60
+quality:
+  strategy:
+    missing: fill
+    duplicates: drop
+    outliers: drop_iqr
+  duplicate_subset:
+  - text
+  outlier_k: 1.5
+annotation:
+  task: ru_fpbench_borderline_prompt_classification
+  confidence_threshold: 0.7
+  include_predictions: true
+hitl:
+  review_queue_path: data/labeled/review_queue.csv
+  corrected_queue_path: data/labeled/review_queue_corrected.csv
+  human_mode: stop_if_missing
+active_learning:
+  enabled: true
+  start_n: 50
+  n_iterations: 5
+  batch_size: 20
+  strategies:
+  - entropy
+  - random
+  metric: f1
+  test_size: 0.2
+  random_state: 42
+training:
+  enabled: true
+  test_size: 0.2
+  random_state: 42
+  model: logreg
+  output_model_path: models/baseline_logreg.pkl
+reporting:
+  enabled: true
+  final_dataset_path: data/labeled/final_dataset.parquet
+  final_dataset_csv: data/labeled/final_dataset.csv
+al_select:
+  enabled: true
+  strategy: entropy
+  batch_size: 100
+  output_csv: data/labeled/al_candidates.csv
+  output_labelstudio: data/labeled/al_candidates_labelstudio.json

@@ -1,0 +1,17 @@
+pandas>=2.0.0
+numpy>=1.26.0
+pyyaml>=6.0
+requests>=2.31.0
+beautifulsoup4>=4.12.0
+lxml>=5.0.0
+datasets>=2.19.0
+tqdm>=4.66.0
+
+# For EDA notebook
+matplotlib>=3.8.0
+scikit-learn>=1.4.0
+
+# Optional (only if you use kaggle_dataset sources)
+kaggle>=1.6.0
+
+joblib>=1.3.0
