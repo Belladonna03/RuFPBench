@@ -4,48 +4,168 @@ user_agent: ru-fpbench-data-collector/0.1 (course assignment)
 save_per_source: true
 save_merged: true
 max_rows_per_source: 500
-sources:
-- type: hf_dataset
-  name: allenai/reward-bench
-  split: filtered
-  text_column: prompt
-  constant_label: safe_seed
-  language: en
-  filters:
-  - column: subset
-    op: in
-    value:
-    - xstest-should-respond
-  meta:
-    seed_role: safe_seed_en
-    note: English benign-ish prompts; translation/adaptation happens after collection.
-- type: api
-  name: wiktionary_ru_idioms
-  endpoint: https://ru.wiktionary.org/w/api.php
-  params:
-    action: query
-    list: categorymembers
-    cmtitle: Категория:Русские_фразеологизмы
-    cmlimit: 200
-    format: json
-  records_path:
-  - query
-  - categorymembers
-  text_field: title
-  label: native_ru_seed
-  language: ru
-  meta:
-    seed_role: native_ru_seed
-    note: 'Idioms/phraseologisms: many are benign but lexically ''trigger-ish''.'
-- type: hf_dataset
-  name: Mnwa/russian-toxic
-  split: train
-  text_column: text
-  label_column: label
-  language: ru
-  meta:
-    seed_role: unsafe_donor_ru
-    note: RU toxicity donors (comments). We may filter/reshape later.
+project:
+  name: ru_fp_bench_data_collection
+  task_type: text_classification
+  output_dir: data/raw
+  random_seed: 42
+
+llm:
+  api_key_env: PROXYAPI_API_KEY
+  base_url: https://openai.api.proxyapi.ru/v1
+  model: openrouter/qwen/qwen3-32b
+  timeout_s: 120
+  max_retries: 3
+  retry_sleep: 2.0
+
+data_collection:
+  save_per_source: true
+  save_merged: true
+  merged_filename: collected_merged.csv
+  max_rows_per_source: null
+
+  standard_columns:
+    - text
+    - label
+    - source
+    - collected_at
+    - source_type
+    - split
+    - language
+    - meta
+
+  sources:
+    # -----------------------------
+    # ПУЛ 1 — ОСНОВНЫЕ ДОНОРЫ
+    # -----------------------------
+
+    - name: reward_bench_xstest_should_respond
+      type: hf_dataset
+      hf_dataset_name: allenai/reward-bench
+      subset: xstest-should-respond
+      split: filtered
+      text_field: prompt
+      label: benign_fp_seed
+      source_type: hf
+      language: en
+      role: primary_donor
+      enabled: true
+
+    - name: rus_context_bench
+      type: hf_dataset
+      hf_dataset_name: askatasuna/RusConTextBench
+      # если агент умеет подмножества/конфиги HF:
+      # subset: idiom
+      split: train
+      text_field: text
+      label: benign_fp_seed
+      source_type: hf
+      language: ru
+      role: primary_donor
+      enabled: true
+
+    - name: slavic_fixed_expressions
+      type: hf_dataset
+      hf_dataset_name: izaitova/slavic_fixed_expressions
+      split: train
+      text_field: text
+      label: benign_fp_seed
+      source_type: hf
+      language: ru
+      role: primary_donor
+      enabled: true
+
+    - name: masterrussian_idioms
+      type: scrape
+      url: https://masterrussian.com/idioms/russian_idioms.htm
+      selector: "table tr, .entry, .article, li"
+      source_type: scrape
+      language: ru
+      label: benign_fp_seed
+      role: primary_donor
+      enabled: true
+
+    - name: verymuchrussian_idioms
+      type: scrape
+      url: https://verymuchrussian.com/russian-idioms/
+      selector: "article p, article li, .entry-content p, .entry-content li"
+      source_type: scrape
+      language: ru
+      label: benign_fp_seed
+      role: primary_donor
+      enabled: true
+
+    - name: golearnrussian_idioms
+      type: scrape
+      url: https://golearnrussian.com/idiomy-russkogo-yazyka/
+      selector: "article p, article li, .entry-content p, .entry-content li"
+      source_type: scrape
+      language: ru
+      label: benign_fp_seed
+      role: primary_donor
+      enabled: true
+
+    # -----------------------------
+    # ПУЛ 2 — КОНТРАСТ / SYNTHETIC DONORS
+    # -----------------------------
+
+    - name: reward_bench_xstest_should_refuse
+      type: hf_dataset
+      hf_dataset_name: allenai/reward-bench
+      subset: xstest-should-refuse
+      split: filtered
+      text_field: prompt
+      label: contrast_refuse
+      source_type: hf
+      language: en
+      role: contrast_donor
+      enabled: true
+
+    - name: phtest
+      type: hf_dataset
+      hf_dataset_name: furonghuang-lab/PHTest
+      split: train
+      text_field: prompt
+      label: synthetic_contrast
+      source_type: hf
+      language: en
+      role: synthetic_donor
+      enabled: true
+
+    # OKTest: лучше подключить как локальный CSV/JSONL,
+    # пока ты не зафиксируешь официальный machine-readable source.
+    - name: oktest_local
+      type: local_file
+      path: data/external/oktest.csv
+      file_format: csv
+      text_field: prompt
+      label: synthetic_contrast
+      source_type: local
+      language: en
+      role: synthetic_donor
+      enabled: false
+
+    - name: russian_language_toxic_comments
+      type: kaggle_dataset
+      kaggle_dataset_name: blackmoon/russian-language-toxic-comments
+      text_field: comment
+      label_field: toxic
+      label: synthetic_contrast
+      source_type: kaggle
+      language: ru
+      role: synthetic_donor
+      enabled: true
+
+    - name: toxic_russian_comments
+      type: kaggle_dataset
+      kaggle_dataset_name: alexandersemiletov/toxic-russian-comments
+      text_field: comment
+      label_field: toxic
+      label: synthetic_contrast
+      source_type: kaggle
+      language: ru
+      role: synthetic_donor
+      enabled: true
 appendix_rewrite:
   enabled: false
   mode: hybrid
