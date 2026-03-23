@@ -12,6 +12,7 @@ dist/
 
 # Virtual environments
 .venv/
+.ru_fp_bench/
 venv/
 env/
 ENV/
@@ -53,3 +54,4 @@ reports/
 
 # Cursor — local debug session logs
 .cursor/debug*.log
+.ru_fp_bench/

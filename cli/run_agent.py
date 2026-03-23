@@ -1,7 +1,13 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
+
+# Project root must be on sys.path before importing local packages (agents, pipeline, shared).
+_ROOT = Path(__file__).resolve().parents[1]
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
 
 from agents.active_learning_agent import ActiveLearningAgent
 from agents.annotation_agent import AnnotationAgent
@@ -13,8 +19,7 @@ from pipeline.io import read_table, write_parquet
 from shared.config import load_config
 from shared.logging_utils import configure_logging, get_logger
 
-# Project root is parent of cli/ (not cli/ itself).
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = _ROOT
 
 _log = get_logger("agent_runner")
 

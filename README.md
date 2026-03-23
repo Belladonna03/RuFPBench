@@ -81,6 +81,144 @@ from agents.active_learning_agent import ActiveLearningAgent
 from agents.rewrite_agent import BorderlineRewriteAgent
 ```
 
+## Assignment 1: DataCollectionAgent
+
+`DataCollectionAgent` is the coursework agent for multi-source collection. It exposes the following public API:
+
+- `scrape(url, selector) -> pd.DataFrame`
+- `fetch_api(endpoint, params) -> pd.DataFrame`
+- `load_dataset(name, source="hf" | "kaggle") -> pd.DataFrame`
+- `merge(sources: list[pd.DataFrame]) -> pd.DataFrame`
+- `run(sources: list[dict] | None = None) -> pd.DataFrame`
+
+Example:
+
+```python
+from agents.data_collection_agent import DataCollectionAgent
+
+agent = DataCollectionAgent(config="config.yaml")
+df = agent.run(
+    sources=[
+        {
+            "type": "hf_dataset",
+            "name": "imdb",
+            "split": "train",
+            "text_column": "text",
+            "label_column": "label",
+            "language": "en",
+        },
+        {
+            "type": "scrape",
+            "name": "example_quotes",
+            "url": "https://example.com",
+            "selector": "article.quote",
+            "label": "plain_benign_control",
+            "language": "en",
+        },
+    ]
+)
+```
+
+The merged dataset is normalized to the common schema (`text/audio/image`, `label`, `source`, `collected_at`, plus metadata fields). The coursework notebook for this assignment is `notebooks/eda.ipynb`.
+
+## Assignment 2: DataQualityAgent
+
+`DataQualityAgent` is implemented as a compact observe → decide → act → evaluate loop for text classification data.
+
+- `detect_issues(df) -> dict`
+- `choose_strategy(report, df) -> dict`
+- `fix(df, strategy) -> pd.DataFrame`
+- `compare(df_before, df_after) -> pd.DataFrame`
+- `run(df) -> dict`
+
+Example:
+
+```python
+from agents.data_quality_agent import DataQualityAgent
+
+agent = DataQualityAgent(task_type="text_classification")
+result = agent.run(df)
+
+report_before = result["report_before"]
+strategy = result["chosen_strategy"]
+df_clean = result["df_clean"]
+comparison = result["comparison"]
+```
+
+For text classification, the agent focuses on empty `text`, empty `label`, duplicate texts, and text-length outliers. The coursework notebook for this assignment is `notebooks/data_quality.ipynb`.
+
+## Assignment 3: AnnotationAgent
+
+`AnnotationAgent` is the weak-supervision and human-in-the-loop labeling agent for the RuFPBench borderline-prompt task.
+
+- `auto_label(df, modality="text") -> pd.DataFrame`
+- `generate_spec(df, task) -> Path`
+- `check_quality(df_labeled) -> dict`
+- `export_to_labelstudio(df) -> Path`
+- `build_review_queue(df) -> pd.DataFrame | None`
+
+Example:
+
+```python
+from agents.annotation_agent import AnnotationAgent
+
+agent = AnnotationAgent(modality="text", config="config.yaml")
+df_labeled = agent.auto_label(df)
+spec_path = agent.generate_spec(df_labeled, task="ru_fpbench_borderline_prompt_classification")
+metrics = agent.check_quality(df_labeled)
+labelstudio_path = agent.export_to_labelstudio(df_labeled)
+```
+
+Notes:
+
+- The agent uses rule-based weak supervision tailored to `candidate_benign_borderline`, `plain_benign_control`, and `unsafe_or_not_suitable`.
+- It produces `predicted_label`, `confidence`, `label_reason`, and `label_signals`.
+- Low-confidence examples are automatically routed to a review queue for HITL.
+- The coursework notebook for this assignment is `notebooks/annotation_agent.ipynb`.
+
+## Assignment 4: ActiveLearningAgent
+
+`ActiveLearningAgent` selects the next most useful examples for human annotation after the first weak-labeling / review cycle.
+
+- `fit(labeled_df) -> model`
+- `query(pool_df, strategy="entropy" | "margin" | "random", batch_size=..., model=None) -> indices`
+- `evaluate(labeled_df, test_df, model=None) -> dict`
+- `select_batch(pool_df, labeled_df, strategy="entropy", batch_size=...) -> pd.DataFrame`
+- `run_cycle(labeled_df, pool_df, test_df, ...) -> list[dict]`
+- `report(histories, output_path=...) -> Path | None`
+- `export_candidates(df, output_csv=..., output_labelstudio=...)`
+
+Example:
+
+```python
+from agents.active_learning_agent import ActiveLearningAgent
+
+agent = ActiveLearningAgent(config="config.yaml")
+model = agent.fit(labeled_df)
+metrics = agent.evaluate(labeled_df, test_df, model=model)
+indices = agent.query(
+    pool_df=pool_df,
+    strategy="margin",
+    batch_size=50,
+    model=model,
+)
+batch = agent.select_batch(
+    pool_df=pool_df,
+    labeled_df=labeled_df,
+    strategy="entropy",
+    batch_size=50,
+)
+```
+
+Notes:
+
+- The baseline selector uses TF-IDF + logistic regression.
+- `entropy`, `margin`, and `random` are supported query strategies.
+- `entropy` / `margin` selection is enriched with uncertainty metadata (`uncertainty`, `margin`, `predicted_label`) and a lightweight diversity filter.
+- Candidates can be exported to CSV and Label Studio JSON for the next annotation round.
+- `run_cycle()` now tracks `n_labeled`, `accuracy`, and `f1_macro` per iteration.
+- The coursework notebook for this assignment is `notebooks/al_experiment.ipynb`.
+
 ## Optional appendix (post-collection rewrite)
 
 ```bash
@@ -104,10 +242,11 @@ Uses `rewrite` settings from `config.yaml` (`rewrite.enabled`, `rewrite.mode`, e
 | `type` | Role |
 |--------|------|
 | `hf_dataset` | Hugging Face `datasets` |
+| `scrape` | HTML page scraping via `requests` + CSS selector (`selector`) |
 | `api` | JSON HTTP API (`endpoint`, `params`, `records_path`, `text_field`, …). If `params` is `action=query` + `list=categorymembers` (or `api_mode: categorymembers`), the agent fetches **all** pages via MediaWiki `continue` pagination and uses `text_field` (e.g. `title`) on each member. |
 | `mediawiki_page` | One MediaWiki page via `action=parse` + `prop=wikitext` (`params.page` or `params.title`), then `parse_mode` (e.g. `mediawiki_wikitext_list`) on `parse.wikitext["*"]`. Optional `wikitext_parser_config`. |
 
-`DataCollectionAgent.run()` dispatches by `sources[].type`: `hf_dataset` → `_collect_hf`, `api` → `_collect_api`, `mediawiki_page` → `_collect_mediawiki_page`.
+`DataCollectionAgent.run()` dispatches by `sources[].type`: `hf_dataset` → `load_dataset()`, `scrape` → `scrape()`, `api` → `fetch_api()`, `mediawiki_page` → `_collect_mediawiki_page()`.
 
 ### Row limits (merged dataset)
 

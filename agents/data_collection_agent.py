@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import importlib
 import json
 import os
 import time
+from urllib.parse import urlparse
 from pathlib import Path
 from typing import Any
 
@@ -229,45 +231,276 @@ def _effective_max_rows(src: dict[str, Any], global_cap: Any) -> int | None:
     return _coerce_row_cap(global_cap)
 
 
+def _default_source_name(value: str, fallback: str) -> str:
+    parsed = urlparse(value)
+    if parsed.netloc:
+        parts = [parsed.netloc]
+        if parsed.path and parsed.path != "/":
+            tail = parsed.path.strip("/").split("/")[-1]
+            if tail:
+                parts.append(tail)
+        return "::".join(parts)
+    return fallback
+
+
 class DataCollectionAgent(LLMEnabledMixin):
     """Collects unified-schema rows from HF datasets, JSON APIs, and MediaWiki API (category + parse)."""
 
-    def __init__(self, config: str | Path | dict[str, Any]):
+    def __init__(self, config: str | Path | dict[str, Any] | None = None):
         self.config_path: Path | None = Path(config) if isinstance(config, (str, Path)) else None
-        self.cfg = as_config_dict(config)
+        self.cfg = as_config_dict(config or {})
         self.collection_cfg = self.cfg.get("collection") or {}
         root = Path(__file__).resolve().parents[1]
         self.paths = ProjectPaths.from_config(root, self.cfg)
         self.project_name = (self.cfg.get("project") or {}).get("name", "RuFPBench")
         self._init_llm(project_config=self.cfg, agent_section="collection", default_profile="default")
 
-    def run(self) -> pd.DataFrame:
+    def load_dataset(
+        self,
+        name: str,
+        source: str = "hf",
+        **kwargs: Any,
+    ) -> pd.DataFrame:
+        """
+        Load a public dataset source into the unified dataframe schema.
+
+        The default ``source='hf'`` works out of the box for common text datasets
+        such as IMDb (``text`` / ``label`` columns). ``source='kaggle'`` is
+        accepted for API compatibility but requires a local export path.
+        """
+        dataset_source = str(source).lower().strip()
+        if dataset_source == "hf":
+            src = {
+                "type": "hf_dataset",
+                "name": name,
+                "split": kwargs.get("split", "train"),
+                "text_column": kwargs.get("text_column", "text"),
+                "label_column": kwargs.get("label_column", "label"),
+                "config_name": kwargs.get("config_name"),
+                "language": kwargs.get("language"),
+                "constant_label": kwargs.get("constant_label"),
+                "unified_label": kwargs.get("unified_label"),
+                "raw_label_name": kwargs.get("raw_label_name"),
+                "filters": kwargs.get("filters") or [],
+                "meta": kwargs.get("meta") or {},
+                "max_rows": kwargs.get("max_rows"),
+            }
+            df = self._collect_hf(src)
+            max_rows = _coerce_row_cap(kwargs.get("max_rows"))
+            if max_rows is not None and len(df) > max_rows:
+                df = df.head(max_rows).reset_index(drop=True)
+            return df
+
+        if dataset_source == "kaggle":
+            csv_path = kwargs.get("csv_path")
+            if not csv_path:
+                raise ValueError("load_dataset(..., source='kaggle') requires csv_path for the exported dataset")
+            df = pd.read_csv(csv_path)
+            text_column = kwargs.get("text_column", "text")
+            label_column = kwargs.get("label_column", "label")
+            source_name = kwargs.get("name") or Path(str(csv_path)).stem or name
+            rows: list[dict[str, Any]] = []
+            for i, row_in in df.iterrows():
+                text = row_in.get(text_column)
+                if pd.isna(text) or not str(text).strip():
+                    continue
+                row = self._empty_row()
+                row.update(
+                    {
+                        "uid": make_uid(source_name, str(text).strip(), str(i)),
+                        "text": str(text).strip(),
+                        "label": None if label_column not in df.columns else row_in.get(label_column),
+                        "source": source_name,
+                        "collected_at": utc_now_iso(),
+                        "language": kwargs.get("language"),
+                        "source_type": "kaggle_dataset",
+                        "url": kwargs.get("url"),
+                        "meta": dumps_meta(kwargs.get("meta") or {}),
+                    }
+                )
+                rows.append(row)
+            return normalize_collection_schema(pd.DataFrame(rows))
+
+        raise ValueError(f"Unsupported dataset source: {source!r}")
+
+    def fetch_api(
+        self,
+        endpoint: str,
+        params: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> pd.DataFrame:
+        """Fetch JSON API rows into the unified dataframe schema."""
+        src = {
+            "type": "api",
+            "name": kwargs.get("name") or _default_source_name(endpoint, "api_source"),
+            "endpoint": endpoint,
+            "params": params or {},
+            "records_path": kwargs.get("records_path", []),
+            "text_field": kwargs.get("text_field", "text"),
+            "label": kwargs.get("label"),
+            "language": kwargs.get("language"),
+            "meta": kwargs.get("meta") or {},
+            "api_mode": kwargs.get("api_mode"),
+            "max_rows": kwargs.get("max_rows"),
+        }
+        df = self._collect_api(src)
+        max_rows = _coerce_row_cap(kwargs.get("max_rows"))
+        if max_rows is not None and len(df) > max_rows:
+            df = df.head(max_rows).reset_index(drop=True)
+        return df
+
+    def scrape(
+        self,
+        url: str,
+        selector: str,
+        **kwargs: Any,
+    ) -> pd.DataFrame:
+        """
+        Scrape text items from an HTML page using a CSS selector.
+
+        Each matched element becomes one row in the unified collection schema.
+        """
+        timeout = float(kwargs.get("request_timeout_s", self.collection_cfg.get("request_timeout_s", 30)))
+        headers = _api_request_headers(self.collection_cfg)
+        source_name = kwargs.get("name") or _default_source_name(url, "scrape_source")
+        _log.info("scrape request source=%s url=%s selector=%s timeout_s=%s", source_name, url, selector, timeout)
+        try:
+            resp = requests.get(url, headers=headers, timeout=timeout)
+            resp.raise_for_status()
+        except requests.HTTPError as e:
+            code = e.response.status_code if e.response is not None else "?"
+            raise RuntimeError(f"scrape source {source_name!r} HTTP {code} for URL {url!r}") from e
+        except requests.RequestException as e:
+            raise RuntimeError(f"scrape source {source_name!r} request failed for URL {url!r}: {e}") from e
+
+        soup = importlib.import_module("bs4").BeautifulSoup(resp.text, "html.parser")
+        nodes = soup.select(selector)
+        attr = kwargs.get("attr")
+        meta_extra = kwargs.get("meta") or {}
+        rows: list[dict[str, Any]] = []
+        for i, node in enumerate(nodes):
+            if attr:
+                text_s = str(node.get(attr, "")).strip()
+            else:
+                text_s = node.get_text(" ", strip=True)
+            if not text_s:
+                continue
+            row = self._empty_row()
+            meta = dict(meta_extra)
+            meta["css_selector"] = selector
+            meta["scrape_index"] = i
+            row.update(
+                {
+                    "uid": make_uid(source_name, text_s, str(i)),
+                    "text": text_s,
+                    "label": kwargs.get("label"),
+                    "source": source_name,
+                    "collected_at": utc_now_iso(),
+                    "language": kwargs.get("language"),
+                    "source_type": "scrape",
+                    "url": url,
+                    "meta": dumps_meta(meta),
+                }
+            )
+            rows.append(row)
+
+        df = pd.DataFrame(rows)
+        max_rows = _coerce_row_cap(kwargs.get("max_rows"))
+        if max_rows is not None and len(df) > max_rows:
+            df = df.head(max_rows).reset_index(drop=True)
+        df = normalize_collection_schema(df)
+        per = bool(self.collection_cfg.get("save_per_source", True))
+        if per and len(df):
+            out_dir = Path(self.collection_cfg.get("output_dir", self.paths.raw_dir))
+            safe = source_name.replace("/", "_")
+            df.to_parquet(out_dir / f"{safe}.parquet", index=False)
+        return df
+
+    def merge(self, sources: list[pd.DataFrame]) -> pd.DataFrame:
+        """Merge source dataframes into the standard schema used by the project."""
+        if not sources:
+            return normalize_collection_schema(pd.DataFrame(columns=COLLECTION_COLUMNS))
+        merged = pd.concat(sources, ignore_index=True)
+        for col in COLLECTION_COLUMNS:
+            if col not in merged.columns:
+                merged[col] = None
+        merged = merged[COLLECTION_COLUMNS + [c for c in merged.columns if c not in COLLECTION_COLUMNS]]
+        merged = normalize_collection_schema(merged)
+        source_col = "source"
+        merged_cap = _coerce_row_cap(self.collection_cfg.get("max_merged_rows"))
+        _MERGED_SAMPLE_RS = 42
+        if merged_cap is not None and not merged.empty:
+            n_before = len(merged)
+            u_before = int(merged[source_col].nunique()) if source_col in merged.columns else 0
+            merged = stratified_sample_by_source(
+                merged,
+                merged_cap,
+                source_col=source_col,
+                random_state=_MERGED_SAMPLE_RS,
+            )
+            n_after = len(merged)
+            u_after = int(merged[source_col].nunique()) if source_col in merged.columns else 0
+            strat = "stratified_by_source" if source_col in merged.columns else "uniform_random"
+            _log.info(
+                "merged dataset sampled down before=%s after=%s strategy=%s random_state=%s "
+                "unique_sources_before=%s unique_sources_after=%s",
+                n_before,
+                n_after,
+                strat,
+                _MERGED_SAMPLE_RS,
+                u_before,
+                u_after,
+            )
+        return merged
+
+    def _collect_source(self, src: dict[str, Any]) -> pd.DataFrame:
+        stype = str(src.get("type", "")).lower().strip()
+        if stype == "hf_dataset":
+            payload = dict(src)
+            payload.pop("type", None)
+            name = payload.pop("name")
+            return self.load_dataset(name, source="hf", **payload)
+        if stype == "kaggle_dataset":
+            payload = dict(src)
+            payload.pop("type", None)
+            name = payload.pop("name")
+            return self.load_dataset(name, source="kaggle", **payload)
+        if stype == "api":
+            payload = dict(src)
+            payload.pop("type", None)
+            endpoint = payload.pop("endpoint")
+            params = payload.pop("params", None)
+            return self.fetch_api(endpoint, params, **payload)
+        if stype == "scrape":
+            payload = dict(src)
+            payload.pop("type", None)
+            url = payload.pop("url")
+            selector = payload.pop("selector")
+            return self.scrape(url, selector, **payload)
+        if stype == "mediawiki_page":
+            return self._collect_mediawiki_page(src)
+        raise ValueError(f"Unsupported source type: {stype}")
+
+    def run(self, sources: list[dict[str, Any]] | None = None) -> pd.DataFrame:
         self.paths.ensure()
         out_dir = Path(self.collection_cfg.get("output_dir", self.paths.raw_dir))
         out_dir.mkdir(parents=True, exist_ok=True)
 
-        sources = self.collection_cfg.get("sources") or []
-        if not sources:
-            raise ValueError("config.collection.sources is empty")
+        source_specs = sources if sources is not None else (self.collection_cfg.get("sources") or [])
+        if not source_specs:
+            raise ValueError("No sources provided: pass run(sources=[...]) or configure collection.sources")
 
-        _log.info("sources count=%s output_dir=%s", len(sources), out_dir)
+        _log.info("sources count=%s output_dir=%s", len(source_specs), out_dir)
         frames: list[pd.DataFrame] = []
-        for idx, src in enumerate(sources):
+        for idx, src in enumerate(source_specs):
             stype = src.get("type")
             label = src.get("name", stype)
             _log.info("source[%s] type=%s name=%s", idx, stype, label)
-            if stype == "hf_dataset":
-                frames.append(self._collect_hf(src))
-            elif stype == "api":
-                frames.append(self._collect_api(src))
-            elif stype == "mediawiki_page":
-                frames.append(self._collect_mediawiki_page(src))
-            else:
-                raise ValueError(f"Unsupported source type: {stype}")
+            frames.append(self._collect_source(src))
 
         global_cap = self.collection_cfg.get("max_rows_per_source")
         trimmed: list[pd.DataFrame] = []
-        for idx, (src, f) in enumerate(zip(sources, frames)):
+        for idx, (src, f) in enumerate(zip(source_specs, frames)):
             name = src.get("name", src.get("type"))
             eff = _effective_max_rows(src, global_cap)
             n = len(f)
@@ -290,48 +523,10 @@ class DataCollectionAgent(LLMEnabledMixin):
             trimmed.append(f)
         frames = trimmed
 
-        merged = pd.concat(frames, ignore_index=True)
-        merged = normalize_collection_schema(merged)
+        merged = self.merge(frames)
         source_col = "source"
         u_merged = int(merged[source_col].nunique()) if source_col in merged.columns else 0
         _log.info("merge done total_rows=%s unique_sources=%s", len(merged), u_merged)
-
-        merged_cap = _coerce_row_cap(self.collection_cfg.get("max_merged_rows"))
-        _MERGED_SAMPLE_RS = 42
-        if merged_cap is not None and not merged.empty:
-            n_before = len(merged)
-            u_before = (
-                int(merged[source_col].nunique())
-                if source_col in merged.columns
-                else 0
-            )
-            merged = stratified_sample_by_source(
-                merged,
-                merged_cap,
-                source_col=source_col,
-                random_state=_MERGED_SAMPLE_RS,
-            )
-            n_after = len(merged)
-            u_after = (
-                int(merged[source_col].nunique())
-                if source_col in merged.columns
-                else 0
-            )
-            strat = (
-                "stratified_by_source"
-                if source_col in merged.columns
-                else "uniform_random"
-            )
-            _log.info(
-                "merged dataset sampled down before=%s after=%s strategy=%s random_state=%s "
-                "unique_sources_before=%s unique_sources_after=%s",
-                n_before,
-                n_after,
-                strat,
-                _MERGED_SAMPLE_RS,
-                u_before,
-                u_after,
-            )
 
         save_merged = bool(self.collection_cfg.get("save_merged", True))
         if save_merged:

@@ -531,7 +531,9 @@ active_learning:
   start_n: 50
   n_iterations: 5
   batch_size: 20
-  strategies: [entropy, random]
+  strategies: [entropy, margin, random]
+  diversity_candidate_pool_factor: 5
+  diversity_similarity_threshold: 0.85
   metric: f1
   test_size: 0.2
 
