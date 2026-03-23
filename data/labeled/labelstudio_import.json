@@ -1,0 +1,26 @@
+[
+  {
+    "data": {
+      "text": "hello",
+      "uid": "a"
+    },
+    "predictions": [
+      {
+        "result": [],
+        "score": 0.66
+      }
+    ]
+  },
+  {
+    "data": {
+      "text": "world",
+      "uid": "b"
+    },
+    "predictions": [
+      {
+        "result": [],
+        "score": 0.66
+      }
+    ]
+  }
+]

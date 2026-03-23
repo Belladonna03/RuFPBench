@@ -1,139 +1,87 @@
-# RuFPBench-MVP — Final Data Pipeline (Course Project)
+# RuFPBench-MVP — Data Pipeline (Course Project)
 
-This repository contains an **end-to-end reproducible data pipeline** for the course project **"Сбор и обработка данных"**.
+End-to-end, reproducible data pipeline for **«Сбор и обработка данных»**: collect seed data, optional borderline rewrite, quality cleaning, weak auto-labeling with HITL, active-learning analysis, and a baseline classifier.
 
-**Goal:** build an MVP dataset of Russian *benign-borderline* prompts (safe by intent, but lexically similar to risky prompts) — **candidate** false positives for safety systems — with **human-in-the-loop** review, Active Learning analysis, and a trained baseline model.
+## Layout
 
-## One-command pipeline
+| Path | Role |
+|------|------|
+| `agents/` | Five agents (business logic only): collection, rewrite, quality, annotation, active learning |
+| `pipeline/` | Orchestration (`orchestrator.py`), IO, HITL merge, training, reporting |
+| `shared/` | Config loading, paths, schema constants, utilities, `llm.py`, `logging_utils.py`, `mediawiki_wikitext.py` |
+| `cli/` | CLI implementation (`run_pipeline.py`, `run_agent.py`) |
+| `docs/CLAUDE.md` | Workspace notes for contributors (agents map, debug defaults) |
+| `run_pipeline.py` | Thin wrapper at repo root; delegates to `cli/run_pipeline.py` |
+| `run_agent.py` | Thin wrapper at repo root; delegates to `cli/run_agent.py` |
+| `config.yaml` | Single source of truth for paths and hyperparameters |
+
+## Logging
+
+Console logging uses the standard library `logging` module. Configure the default **INFO** level or set verbosity:
 
 ```bash
-pip install -r requirements.txt
+python run_pipeline.py --config config.yaml --log-level INFO
+python run_agent.py --agent quality --config config.yaml --log-level DEBUG
+```
+
+Log lines look like: `LEVEL [component] message` (e.g. `[pipeline]` for orchestration, `[agents.data_collection]` for an agent). **Secrets and API keys are never logged.**
+
+## Install
+
+```bash
+python3 -m pip install -r requirements.txt
+```
+
+Copy `.env.example` to `.env` and set secrets (e.g. `HF_TOKEN` for Hugging Face Hub, **`DATA_COLLECTION_PROXYAPI_API_KEY`** for collection-stage LLM EDA interpretation). On startup, `load_config()` loads the first `.env` found next to `config.yaml` (walking up parent directories) or `./.env` in the current working directory, so `datasets` / `huggingface_hub` receive `HF_TOKEN` via `os.environ`. You can also `export HF_TOKEN=...` in the shell.
+
+## Run the full pipeline
+
+```bash
 python run_pipeline.py --config config.yaml
 ```
 
-### Human-in-the-loop (HITL)
+Stages (in order): **collection → rewrite (optional) → quality → annotation → HITL gate (optional stop) → merge corrections → AL batch export (optional) → AL curves (optional) → training (optional) → reports.**
 
-If `hitl.human_mode = stop_if_missing` (default), the first run will generate:
+If `hitl.human_mode = stop_if_missing` and `data/labeled/review_queue.csv` exists with rows but `data/labeled/review_queue_corrected.csv` is missing or incomplete, the pipeline **exits with code 2** and prints what to do next.
 
-- `data/labeled/review_queue.csv` (also copied to `./review_queue.csv`)
-
-Edit labels in that file and save it as:
-
-- `data/labeled/review_queue_corrected.csv`
-
-Then re-run the same command:
+After editing the corrected queue:
 
 ```bash
 python run_pipeline.py --config config.yaml
 ```
 
-Artifacts:
-- Final dataset: `data/labeled/final_dataset.parquet`
-- Data card: `data/labeled/DATA_CARD.md`
-- Reports: `reports/final_report.md` (+ quality/annotation/AL/train reports)
-- Model: `models/baseline_logreg.pkl`
+### Typical artifacts
 
----
+- Raw / merged: `data/raw/merged_raw.parquet` (+ per-source files when enabled)
+- **Collection EDA** (after merge): `reports/collection_eda/` — tables and plots (`class_distribution*.csv/png`, `source_distribution*.csv/png`, `text_length_*`, `top20_words*.csv/png`, `source_label_crosstab.csv`, `eda_summary.md`) are **computed in code**. **`eda_llm_summary.md`** is optional text interpretation via ProxyAPI (`collection.llm` in `config.yaml`); if the API is unavailable, the collection step still finishes and code-based EDA remains.
+- Interim: `data/interim/rewrite.parquet`, `data/interim/clean.parquet`
+- Labeled: `data/labeled/auto_labeled.parquet`, `data/labeled/final_dataset.parquet`, review queues
+- Reports: `reports/final_report.md`, `reports/quality_prescan.json`, optional `reports/learning_curve.png`
+- Model (if `training.enabled`): `models/baseline_logreg.pkl`
 
-# RuFPBench-MVP — DataCollectionAgent (Assignment 1)
-
-This repo contains **DataCollectionAgent** for the course **"Сбор и обработка данных"**.
-
-## Goal (ML task context)
-
-The broader project goal is to build a dataset of **Russian benign-borderline prompts** (safe by intent, but lexically similar to risky prompts), which are **candidates** for false-positive refusals in safety systems.
-
-**Assignment 1 scope:** only **data collection**. We collect *seed corpora* from multiple sources and unify them into a single dataset.  
-Later pipeline stages (cleaning, auto-labeling, rewriting toxic → benign-borderline, human review, AL, training) are implemented in subsequent assignments.
-
-> **Optional appendix step (post-collection):**
-> This repo also includes a modular post-collection rewrite step (`agents/post_collection_appendix.py`).
-> It can be enabled via `appendix_rewrite:` section in `config.yaml`.
-> The appendix is **not required for Assignment 1**, but is useful for RuFPBench-MVP.
-
----
-
-## What the agent does
-
-- Collects data from **2+ sources**:
-  - Open dataset from Hugging Face / Kaggle
-  - Scraping **or** API source
-- Maps all sources to a **fixed unified schema**
-- Saves per-source and merged outputs into `data/raw/`
-
----
-
-## Output schema (fixed columns)
-
-The agent always returns a `pandas.DataFrame` with these columns:
-
-| column | type | description |
-|---|---|---|
-| `uid` | str | stable hash id |
-| `text` | str \| None | text content (for this project) |
-| `audio` | str \| None | path/url (unused here) |
-| `image` | str \| None | path/url (unused here) |
-| `label` | any | **weak label** at collection stage (ok for Assignment 1) |
-| `source` | str | source name |
-| `collected_at` | str | UTC timestamp (ISO) |
-| `language` | str \| None | `ru` / `en` |
-| `source_type` | str | `hf_dataset` / `kaggle_dataset` / `scrape` / `api` |
-| `url` | str \| None | origin url |
-| `meta` | str \| None | JSON string with extra metadata |
-
----
-
-## Quickstart
-
-### 1) Install
+## Debug one agent
 
 ```bash
-pip install -r requirements.txt
+python run_agent.py --agent collection --config config.yaml
+python run_agent.py --agent rewrite   --config config.yaml --input data/raw/merged_raw.parquet
+python run_agent.py --agent quality   --config config.yaml --input data/interim/rewrite.parquet
+python run_agent.py --agent annotation --config config.yaml --input data/interim/clean.parquet
+python run_agent.py --agent al        --config config.yaml --input data/labeled/final_dataset.parquet
 ```
 
-### 2) Configure sources
+Aliases: `data_collection`, `borderline_rewrite`, `data_quality`, `active_learning`.
 
-Edit `config.yaml`.
+## Imports (for notebooks)
 
-### 3) Run collection
-
-```bash
-python -c "from agents.data_collection_agent import DataCollectionAgent; df = DataCollectionAgent('config.yaml').run(); print(df.head()); print(df.shape)"
+```python
+from agents.data_collection_agent import DataCollectionAgent
+from agents.data_quality_agent import DataQualityAgent
+from agents.annotation_agent import AnnotationAgent
+from agents.active_learning_agent import ActiveLearningAgent
+from agents.rewrite_agent import BorderlineRewriteAgent
 ```
 
-Outputs:
-- `data/raw/<source_name>.parquet` for each source
-- `data/raw/merged_raw.parquet` and `data/raw/merged_raw.csv`
-
----
-
-## EDA
-
-Open and run:
-
-- `notebooks/eda.ipynb`
-
-The notebook contains:
-- class distribution
-- text length distribution
-- top-20 tokens (overall and per label)
-
----
-
-## Optional appendix: unsafe → benign-borderline rewrite (post-collection)
-
-This step generates **candidate safe-but-borderline** Russian prompts from unsafe donor texts.
-It is inspired by over-refusal benchmarks that rewrite toxic prompts into "seemingly toxic but safe" ones (e.g., OR-Bench).
-
-1) Enable it in `config.yaml`:
-
-```yaml
-appendix_rewrite:
-  enabled: true
-  mode: rule     # or hybrid/llm
-```
-
-2) Run after collection:
+## Optional appendix (post-collection rewrite)
 
 ```bash
 python agents/post_collection_appendix.py --config config.yaml \
@@ -141,151 +89,91 @@ python agents/post_collection_appendix.py --config config.yaml \
   --output data/raw/merged_with_appendix.parquet
 ```
 
-If you use `mode: llm` or `mode: hybrid`, set an OpenAI-compatible key:
+Uses `rewrite` settings from `config.yaml` (`rewrite.enabled`, `rewrite.mode`, etc.).
 
-```bash
-export OPENAI_API_KEY="..."
+## Hugging Face / API / MediaWiki collection
+
+- HF sources need **internet** and the `datasets` package.
+- HTTP API sources (e.g. Wiktionary `action=query`) need a proper **User-Agent**; set `WIKIMEDIA_CONTACT_EMAIL` (and optionally `WIKIMEDIA_USER_AGENT_APP`) in the environment — see `.env.example`. Do not put contact email in `config.yaml`.
+- Wiktionary and other wikis are read via **`https://…/w/api.php`** (`type: api` for category lists, `type: mediawiki_page` for `action=parse` + wikitext). Wikitext parsing lives in `shared/mediawiki_wikitext.py`.
+- For **rewrite** LLM calls, `config.yaml` uses **`REWRITE_AGENT_PROXYAPI_*`** (ProxyAPI OpenRouter endpoint, default base `https://api.proxyapi.ru/openrouter/v1`, default model `qwen/qwen3-8b`). Copy `.env.example` and set at least **`REWRITE_AGENT_PROXYAPI_API_KEY`**. Other agents are unchanged; global **`OPENROUTER_*`** / **`PROXYAPI_*`** still work when `rewrite.llm` does not override them (see `shared/llm.py`).
+- Rewrite uses **`rewrite.runtime`** (429 backoff, optional `parallel_enabled` / `max_concurrency`, `inter_request_delay_s`, `debug_max_selected_rows`) and logs endpoint/model/`api_key_env` (never the key). **`openrouter/free`** remains rate-limited if you point `rewrite.llm` at it.
+
+### Collection `sources` types
+
+| `type` | Role |
+|--------|------|
+| `hf_dataset` | Hugging Face `datasets` |
+| `api` | JSON HTTP API (`endpoint`, `params`, `records_path`, `text_field`, …). If `params` is `action=query` + `list=categorymembers` (or `api_mode: categorymembers`), the agent fetches **all** pages via MediaWiki `continue` pagination and uses `text_field` (e.g. `title`) on each member. |
+| `mediawiki_page` | One MediaWiki page via `action=parse` + `prop=wikitext` (`params.page` or `params.title`), then `parse_mode` (e.g. `mediawiki_wikitext_list`) on `parse.wikitext["*"]`. Optional `wikitext_parser_config`. |
+
+`DataCollectionAgent.run()` dispatches by `sources[].type`: `hf_dataset` → `_collect_hf`, `api` → `_collect_api`, `mediawiki_page` → `_collect_mediawiki_page`.
+
+### Row limits (merged dataset)
+
+After each source is collected, its dataframe may be **trimmed** before concatenation into `merged_raw`:
+
+| Config key | Meaning |
+|------------|---------|
+| `collection.max_rows_per_source` | Default cap applied to any source that does **not** set its own `max_rows`. |
+| `sources[].max_rows` | Optional per-source override. If this key is present, it wins over `max_rows_per_source`. |
+
+`null` (YAML) or omission of a cap means **no limit** at that level: e.g. `max_rows_per_source: null` and no `max_rows` on a source → that source keeps all rows. Explicit `max_rows: null` on a source also means **unlimited** for that source (useful when the collection default is a positive integer).
+
+### Example: Wiktionary category (`api` + categorymembers)
+
+```yaml
+# Under collection.sources:
+- type: api
+  name: wiktionary_ru_phraseologisms_category
+  endpoint: https://ru.wiktionary.org/w/api.php
+  params:
+    action: query
+    list: categorymembers
+    cmtitle: Категория:Фразеологизмы/ru
+    cmlimit: 200
+    format: json
+  text_field: title
+  label: native_ru_seed
+  language: ru
+  meta:
+    seed_role: native_ru_seed
 ```
 
----
+`records_path` is optional for categorymembers (ignored when pagination is used); you can omit it or keep `[query, categorymembers]` for documentation.
 
-## Notes on reproducibility
+### Example: Wiktionary appendix page (`mediawiki_page`)
 
-- Hugging Face sources require internet access.
-- Kaggle sources (optional) require `kaggle` CLI credentials:
-  - `~/.kaggle/kaggle.json` **or** env vars `KAGGLE_USERNAME` / `KAGGLE_KEY`.
-
----
-
-## License / Safety
-
-This project may collect text that contains toxic language (used as **donors** for later rewriting and filtering).  
-Do not use collected data for harassment or harm; only for research/benchmarking and safety evaluation.
-
-
----
-
-## DataQualityAgent (Assignment 2)
-
-This repo also includes `DataQualityAgent` ("Data Detective") for Assignment 2.
-
-### Quick usage
-
-```bash
-python - << 'PY'
-import pandas as pd
-from data_quality_agent import DataQualityAgent
-
-df = pd.read_parquet('data/raw/merged_raw.parquet')
-agent = DataQualityAgent()
-report = agent.detect_issues(df)
-print(report['duplicates'])
-
-clean = agent.fix(df, strategy={
-    'missing': 'fill',
-    'duplicates': 'drop',
-    'outliers': 'drop_iqr'
-})
-comparison = agent.compare(df, clean)
-print(comparison['table'][:5])
-PY
+```yaml
+- type: mediawiki_page
+  name: wiktionary_ru_idioms_page
+  endpoint: https://ru.wiktionary.org/w/api.php
+  params:
+    action: parse
+    page: Приложение:Список_фразеологизмов_русского_языка
+    prop: wikitext
+    format: json
+  parse_mode: mediawiki_wikitext_list
+  wikitext_parser_config:
+    include_nonlist_lines: false
+  label: native_ru_seed
+  language: ru
+  meta:
+    seed_role: native_ru_seed
 ```
 
-### Notebook
+## Smoke checks (no Hugging Face)
 
-- `notebooks/quality_eda.ipynb` — визуализации проблем качества + 2 стратегии чистки + сравнение до/после.
-
-
-
----
-
-## AnnotationAgent (Assignment 3)
-
-Implements automatic labeling for **text** modality, generates an annotation specification, computes quality metrics, and exports tasks to Label Studio.
-
-### Quick usage
+After `pip install -r requirements.txt`:
 
 ```bash
-python - << 'PY'
-import pandas as pd
-from annotation_agent import AnnotationAgent
-
-# load data collected by Assignment 1
-try:
-    df = pd.read_parquet('data/raw/merged_with_appendix.parquet')
-except Exception:
-    df = pd.read_parquet('data/raw/merged_raw.parquet')
-
-agent = AnnotationAgent(modality='text', config={'confidence_threshold': 0.7})
-df_labeled = agent.auto_label(df)
-
-spec_path = agent.generate_spec(df_labeled, task='ru_fpbench_borderline_prompt_classification')
-print('spec:', spec_path)
-
-metrics = agent.check_quality(df_labeled)
-print(metrics)
-
-ls_path = agent.export_to_labelstudio(df_labeled)
-print('labelstudio:', ls_path)
-PY
+python3 -c "from shared.config import load_config; print(load_config('config.yaml')['project']['name'])"
+python3 -c "from agents import DataCollectionAgent, ActiveLearningAgent; print('agents OK')"
+python3 run_pipeline.py --help && python3 run_agent.py --help
 ```
 
-### Outputs
+End-to-end collection requires network access to download datasets.
 
-- `reports/annotation_spec.md`
-- `data/labeled/labelstudio_import.json`
-- `data/labeled/review_queue.csv` (low-confidence HITL queue)
-- `data/labeled/labelstudio_low_confidence.json`
+## License / safety
 
-### Notebook
-
-- `notebooks/annotation_demo.ipynb`
-
-
-
----
-
-## ActiveLearningAgent (Assignment 4)
-
-Track A: Active Learning agent for smart data selection.
-
-### Quick usage
-
-```bash
-python - << 'PY'
-import pandas as pd
-from al_agent import ActiveLearningAgent
-from sklearn.model_selection import train_test_split
-
-# Load any collected dataset
-try:
-    df = pd.read_parquet('data/raw/merged_with_appendix.parquet')
-except Exception:
-    df = pd.read_parquet('data/raw/merged_raw.parquet')
-
-# Minimal oracle label for AL simulation (you can replace with human labels later)
-# NOTE: For real HITL, the selected batch would be exported for annotation.
-
-df['label'] = df.get('label')  # if already labeled
-
-# Use a small split for demo
-train_pool, test_df = train_test_split(df, test_size=0.2, random_state=42)
-labeled_df, pool_df = train_test_split(train_pool, train_size=50, random_state=42)
-
-agent = ActiveLearningAgent(model='logreg')
-h_entropy = agent.run_cycle(labeled_df=labeled_df, pool_df=pool_df, test_df=test_df,
-                            strategy='entropy', n_iterations=5, batch_size=20)
-h_random = agent.run_cycle(labeled_df=labeled_df, pool_df=pool_df, test_df=test_df,
-                           strategy='random', n_iterations=5, batch_size=20)
-
-agent.report({'entropy': h_entropy, 'random': h_random}, metric='f1',
-             output_path='reports/learning_curve.png',
-             title='Active Learning: entropy vs random (macro F1)')
-print('Saved learning curve to reports/learning_curve.png')
-PY
-```
-
-### Notebook
-
-- `notebooks/al_experiment.ipynb` — full experiment: N=50 start, 5 iterations × 20, entropy vs random, label savings.
-
+Collected text may include toxic material used as **donors** for research. Use only for benchmarking and safety research.

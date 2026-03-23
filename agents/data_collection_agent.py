@@ -1,538 +1,872 @@
-"""
-DataCollectionAgent for course "Сбор и обработка данных" (Assignment 1).
-
-This agent collects raw data from multiple sources and returns a unified pandas.DataFrame.
-
-Supported source types:
-- hf_dataset: Hugging Face datasets via `datasets.load_dataset`
-- kaggle_dataset: Kaggle datasets via Kaggle API (optional; requires credentials)
-- scrape: HTML scraping via requests + BeautifulSoup (CSS selector)
-- api: REST API fetch via requests (JSON → records extraction)
-
-Output schema (fixed columns):
-- text: str | None
-- audio: str | None            # path or url (optional)
-- image: str | None            # path or url (optional)
-- label: str | int | None      # weak label at collection stage is OK
-- source: str                  # source name
-- collected_at: str            # ISO timestamp UTC
-- language: str | None         # e.g. "ru"/"en"
-- source_type: str             # hf_dataset/kaggle_dataset/scrape/api
-- url: str | None              # origin url (for scrape/api)
-- meta: str | None             # JSON-encoded metadata
-- uid: str                     # stable id (sha1 over text+source+seed_role)
-
-The agent is intentionally "collection-only": transformation steps (translation, rewrite) should
-live in later pipeline stages (or in an optional appendix step after collection).
-"""
-
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import datetime, timezone
-from pathlib import Path
-from typing import Any, Iterable, Literal, Optional
-
-import hashlib
 import json
-import subprocess
+import os
+import time
+from pathlib import Path
+from typing import Any
 
 import pandas as pd
 import requests
-import yaml
-from bs4 import BeautifulSoup
 
-try:
-    from datasets import load_dataset as hf_load_dataset  # type: ignore
-except Exception:  # pragma: no cover
-    hf_load_dataset = None  # type: ignore
+# Wikimedia/Wiktionary API requires a descriptive User-Agent (see https://meta.wikimedia.org/wiki/User-Agent_policy).
+_DEFAULT_WIKIMEDIA_APP = "RuFPBench"
+_WIKIMEDIA_UA_VERSION = "0.1"
+
+from .collection_eda import eda as collection_eda_compute
+from .collection_eda import save_eda as collection_save_eda
+from shared.collection_merge_sample import stratified_sample_by_source
+from shared.config import as_config_dict
+from shared.llm import LLMEnabledMixin
+from shared.logging_utils import get_logger
+from shared.mediawiki_wikitext import apply_wikitext_mode
+from shared.paths import ProjectPaths
+from shared.schemas import COLLECTION_COLUMNS
+from shared.utils import dumps_meta, make_uid, utc_now_iso
+
+_log = get_logger("agents.data_collection")
+
+_EDA_LLM_SYSTEM_PROMPT = """You are analyzing a raw text dataset for a Russian-language ML project on benign-borderline prompt classification.
+
+Project context:
+- This is not a final clean benchmark yet.
+- This is a raw donor pool collected from multiple heterogeneous sources.
+- The downstream pipeline includes: collection -> quality filtering -> rewrite -> annotation -> human review -> active learning.
+- Some sources are useful as native lexical seeds.
+- Some sources are useful only as unsafe donor material for rewrite.
+- Some sources may be noisy and only partially useful.
+
+Your task:
+Write a high-quality analytical markdown report about the collected raw dataset based on:
+1. computed EDA statistics
+2. source-level distributions
+3. label distributions
+4. seed-role distributions
+5. several sample rows from each source
+
+Important:
+- Do NOT write generic boilerplate like "the dataset is diverse" unless you immediately explain why that matters here.
+- Do NOT just restate numbers mechanically.
+- Do NOT treat raw donor labels and project labels as equivalent if they are mixed.
+- Do NOT pretend this is already a clean final dataset if it is not.
+- Focus on dataset quality, source roles, project usefulness, and next-step implications.
+
+You must reason in terms of the project's actual structure:
+- native_ru_seed = lexical / idiomatic / phraseological seed layer
+- unsafe_donor_ru = unsafe donor pool for rewrite
+- safe_seed_en = English structural donor prompts
+- plain_benign_control = benign control layer
+- noisy_ru_seed = noisy lexical support layer
+
+The report must answer these questions:
+
+1. What exactly was collected?
+Explain what kinds of sources are present and what roles they play in the project.
+Do not just list source names — explain their function.
+
+2. Which sources look most useful?
+Identify the strongest sources for:
+- native lexical seeds
+- unsafe donor material
+- benign controls
+- translation/adaptation donors
+Be specific.
+
+3. Which sources look noisy or problematic?
+Point out sources that are:
+- too noisy
+- too long
+- too heterogeneous
+- not prompt-like
+- weakly aligned with the final task
+Use concrete reasoning, not vague statements.
+
+4. What are the main data quality problems?
+You must explicitly check for and discuss:
+- dirty or inconsistent label space
+- source imbalance
+- extreme text-length outliers
+- HTML/noise artifacts
+- mixed granularity of texts (single lexical items vs long forum posts vs definitions)
+- risk of using donor data as if it were final benchmark data
+
+5. What should be done next?
+Give practical recommendations for:
+- filtering / cleaning
+- label normalization
+- source prioritization
+- rewrite usage
+- what should remain donor-only
+- what can serve as a strong base for borderline generation
+
+Writing style requirements:
+- Write in Russian.
+- Be concise but concrete.
+- Write like a data analyst / ML researcher, not like a generic assistant.
+- Prefer strong source-aware statements over generic praise.
+- Avoid filler.
+- Avoid vague phrases such as "dataset is informative" unless backed by a reason.
+- Use short sections with meaningful headings.
+- If something is suspicious or broken, say so directly.
+- If label schema looks inconsistent, say so directly.
+- If a source is useful only as donor material and not as final data, say so directly.
+
+Output format:
+Produce markdown with the following sections:
+
+# Отчёт по EDA raw-датасета
+
+## Краткое описание собранных данных
+
+## Наиболее полезные источники
+
+## Проблемные источники
+
+## Основные проблемы качества данных
+
+## Рекомендации
+
+Additional guidance:
+- If you see raw labels like 0/1 mixed with semantic labels, explicitly call this a schema problem.
+- If one source dominates the dataset, explicitly discuss why that is risky.
+- If lexical wiki sources are the strongest material for borderline generation, say so.
+- If toxic/slang sources should be donor-only, say so.
+- If the dataset is suitable as a donor pool but not as a final benchmark, say so explicitly.
+
+Grounding: the user message contains JSON with precomputed EDA metrics and sample texts per source. Do not invent or recalculate statistics; rely only on that JSON and the samples."""
 
 
-SourceType = Literal["hf_dataset", "kaggle_dataset", "scrape", "api"]
+def _nullable_str_scalar(v: Any) -> Any:
+    """Missing -> pd.NA; else str (for parquet-safe nullable strings, no literal 'nan' for floats)."""
+    if v is None:
+        return pd.NA
+    try:
+        if pd.isna(v):
+            return pd.NA
+    except (ValueError, TypeError):
+        return pd.NA
+    return str(v)
 
 
-def utc_now_iso() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
-
-
-def sha1_hex(s: str) -> str:
-    return hashlib.sha1(s.encode("utf-8", errors="ignore")).hexdigest()
-
-
-def ensure_columns(df: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
-    for c in columns:
-        if c not in df.columns:
-            df[c] = None
-    return df[columns]
-
-
-def extract_records(obj: Any, records_path: Optional[list[str]] = None) -> list[Any]:
+def normalize_collection_schema(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Extract list-like records from a JSON object.
-
-    - If records_path is None:
-        - if obj is list -> obj
-        - if obj is dict -> [obj]
-    - If records_path is provided, traverses dict keys and expects a list at the end.
+    Unify string-like columns so pyarrow can write parquet (no object columns mixing int/str).
     """
-    if records_path is None:
-        if isinstance(obj, list):
-            return obj
-        return [obj]
+    out = df.copy()
+    if "label" in out.columns:
+        before = out["label"].dtype
+        out["label"] = out["label"].map(_nullable_str_scalar).astype(pd.StringDtype())
+        _log.info("column label dtype before=%s after=%s", before, out["label"].dtype)
 
+    for col in ("uid", "text", "source", "collected_at", "language", "source_type", "url", "meta", "audio", "image"):
+        if col not in out.columns or col == "label":
+            continue
+        if out[col].dtype != object:
+            continue
+        before = out[col].dtype
+        out[col] = out[col].map(_nullable_str_scalar).astype(pd.StringDtype())
+        _log.debug("column %s dtype before=%s after=%s", col, before, out[col].dtype)
+
+    return out
+
+
+def _get_nested(obj: Any, path: list[str]) -> Any:
     cur = obj
-    for key in records_path:
-        if isinstance(cur, dict) and key in cur:
-            cur = cur[key]
-        else:
-            raise ValueError(f"records_path traversal failed at key='{key}'. Got type={type(cur)}")
-    if isinstance(cur, list):
-        return cur
-    # sometimes API returns dict of dicts; allow dict → list(values)
-    if isinstance(cur, dict):
-        return list(cur.values())
-    return [cur]
+    for key in path:
+        cur = cur[key]
+    return cur
 
 
-@dataclass
-class AgentConfig:
-    output_dir: Path
-    request_timeout_s: int = 30
-    user_agent: str = "ru-fpbench-data-collector/0.1 (+https://example.local)"
-    save_per_source: bool = True
-    save_merged: bool = True
-    max_rows_per_source: Optional[int] = None
+def _http_user_agent(collection_cfg: dict[str, Any]) -> str:
+    """User-Agent for HTTP API sources (Wikimedia blocks generic clients without it)."""
+    full_override = os.environ.get("RUFBENCH_HTTP_USER_AGENT", "").strip()
+    if full_override:
+        return full_override
+    explicit = (collection_cfg.get("user_agent") or "").strip()
+    if explicit:
+        return explicit
+    app = (os.environ.get("WIKIMEDIA_USER_AGENT_APP") or _DEFAULT_WIKIMEDIA_APP).strip() or _DEFAULT_WIKIMEDIA_APP
+    contact = os.environ.get("WIKIMEDIA_CONTACT_EMAIL", "").strip()
+    if contact:
+        return f"{app}/{_WIKIMEDIA_UA_VERSION} (contact: {contact})"
+    return f"{app}/{_WIKIMEDIA_UA_VERSION}"
 
 
-class DataCollectionAgent:
+def _api_request_headers(collection_cfg: dict[str, Any]) -> dict[str, str]:
+    return {"User-Agent": _http_user_agent(collection_cfg)}
+
+
+def _is_mediawiki_categorymembers_source(src: dict[str, Any]) -> bool:
+    """api + query categorymembers → paginated MediaWiki API path (not single-shot JSON)."""
+    mode = str(src.get("api_mode", "")).lower()
+    if mode in ("categorymembers", "mediawiki_categorymembers"):
+        return True
+    p = src.get("params") or {}
+    return p.get("action") == "query" and p.get("list") == "categorymembers"
+
+
+def _coerce_row_cap(v: Any) -> int | None:
+    """Turn config value into a positive row cap, or None = unlimited."""
+    if v is None:
+        return None
+    if isinstance(v, bool):
+        raise ValueError("max_rows must be an integer or null, not a boolean")
+    if isinstance(v, (int, float)):
+        n = int(v)
+        if n <= 0:
+            return None
+        return n
+    raise TypeError(f"max_rows must be an integer or null, got {type(v).__name__}")
+
+
+def _effective_max_rows(src: dict[str, Any], global_cap: Any) -> int | None:
     """
-    DataCollectionAgent(config='config.yaml').
-
-    You can either pass sources explicitly into run(...), or put `sources:` into config.yaml.
+    Priority: ``sources[].max_rows`` (if key present) else ``collection.max_rows_per_source``.
+    ``null`` / omitted cap / non-positive values → no limit for that resolution step.
     """
+    if "max_rows" in src:
+        return _coerce_row_cap(src.get("max_rows"))
+    return _coerce_row_cap(global_cap)
 
-    STANDARD_COLUMNS = [
-        "uid",
-        "text",
-        "audio",
-        "image",
-        "label",
-        "source",
-        "collected_at",
-        "language",
-        "source_type",
-        "url",
-        "meta",
-    ]
 
-    def __init__(self, config: str | dict[str, Any] = "config.yaml") -> None:
-        if isinstance(config, str):
-            with open(config, "r", encoding="utf-8") as f:
-                raw_cfg = yaml.safe_load(f)
-        else:
-            raw_cfg = config
+class DataCollectionAgent(LLMEnabledMixin):
+    """Collects unified-schema rows from HF datasets, JSON APIs, and MediaWiki API (category + parse)."""
 
-        out_dir = Path(raw_cfg.get("output_dir", "data/raw"))
+    def __init__(self, config: str | Path | dict[str, Any]):
+        self.config_path: Path | None = Path(config) if isinstance(config, (str, Path)) else None
+        self.cfg = as_config_dict(config)
+        self.collection_cfg = self.cfg.get("collection") or {}
+        root = Path(__file__).resolve().parents[1]
+        self.paths = ProjectPaths.from_config(root, self.cfg)
+        self.project_name = (self.cfg.get("project") or {}).get("name", "RuFPBench")
+        self._init_llm(project_config=self.cfg, agent_section="collection", default_profile="default")
+
+    def run(self) -> pd.DataFrame:
+        self.paths.ensure()
+        out_dir = Path(self.collection_cfg.get("output_dir", self.paths.raw_dir))
         out_dir.mkdir(parents=True, exist_ok=True)
 
-        self.cfg = AgentConfig(
-            output_dir=out_dir,
-            request_timeout_s=int(raw_cfg.get("request_timeout_s", 30)),
-            user_agent=str(raw_cfg.get("user_agent", "ru-fpbench-data-collector/0.1 (+https://example.local)")),
-            save_per_source=bool(raw_cfg.get("save_per_source", True)),
-            save_merged=bool(raw_cfg.get("save_merged", True)),
-            max_rows_per_source=raw_cfg.get("max_rows_per_source"),
-        )
+        sources = self.collection_cfg.get("sources") or []
+        if not sources:
+            raise ValueError("config.collection.sources is empty")
 
-        self.raw_cfg = raw_cfg
-
-    # -------------------------
-    # Skills required by course
-    # -------------------------
-
-    def scrape(self, url: str, selector: str, *, source_name: str, label: Any = None,
-               language: Optional[str] = None, extra_meta: Optional[dict[str, Any]] = None,
-               max_items: Optional[int] = None) -> pd.DataFrame:
-        """
-        Scrape HTML page and extract text nodes using CSS selector.
-        Returns a unified DataFrame.
-        """
-        headers = {"User-Agent": self.cfg.user_agent}
-        r = requests.get(url, headers=headers, timeout=self.cfg.request_timeout_s)
-        r.raise_for_status()
-
-        soup = BeautifulSoup(r.text, "lxml")
-        nodes = soup.select(selector)
-        texts: list[str] = []
-        for n in nodes:
-            t = n.get_text(" ", strip=True)
-            if t:
-                texts.append(t)
-
-        if max_items is not None:
-            texts = texts[:max_items]
-
-        meta = extra_meta or {}
-        meta.update({"selector": selector})
-
-        df = pd.DataFrame({
-            "text": texts,
-            "label": label,
-            "source": source_name,
-            "collected_at": utc_now_iso(),
-            "language": language,
-            "source_type": "scrape",
-            "url": url,
-            "meta": [json.dumps(meta, ensure_ascii=False)] * len(texts),
-        })
-        return self._finalize(df, seed_role=meta.get("seed_role"))
-
-    def fetch_api(self, endpoint: str, params: dict[str, Any], *,
-                  source_name: str,
-                  records_path: Optional[list[str]] = None,
-                  text_field: str = "text",
-                  label: Any = None,
-                  language: Optional[str] = None,
-                  extra_meta: Optional[dict[str, Any]] = None,
-                  max_items: Optional[int] = None) -> pd.DataFrame:
-        """
-        Fetch JSON from API and extract records into unified DataFrame.
-
-        The API response can be:
-        - list[dict]
-        - dict with nested list (use records_path)
-
-        text_field can point to an existing field inside each record.
-        """
-        headers = {"User-Agent": self.cfg.user_agent}
-        r = requests.get(endpoint, params=params, headers=headers, timeout=self.cfg.request_timeout_s)
-        r.raise_for_status()
-        payload = r.json()
-
-        records = extract_records(payload, records_path=records_path)
-        if max_items is not None:
-            records = records[:max_items]
-
-        texts: list[str] = []
-        metas: list[str] = []
-        for rec in records:
-            if isinstance(rec, dict):
-                t = rec.get(text_field)
-                # allow fallback
-                if t is None and "title" in rec and text_field != "title":
-                    t = rec.get("title")
-                if t is None:
-                    # skip empty records
-                    continue
-                texts.append(str(t))
-                meta = extra_meta.copy() if extra_meta else {}
-                meta.update({"endpoint": endpoint, "params": params, "record": {k: rec.get(k) for k in list(rec.keys())[:10]}})
-                metas.append(json.dumps(meta, ensure_ascii=False))
+        _log.info("sources count=%s output_dir=%s", len(sources), out_dir)
+        frames: list[pd.DataFrame] = []
+        for idx, src in enumerate(sources):
+            stype = src.get("type")
+            label = src.get("name", stype)
+            _log.info("source[%s] type=%s name=%s", idx, stype, label)
+            if stype == "hf_dataset":
+                frames.append(self._collect_hf(src))
+            elif stype == "api":
+                frames.append(self._collect_api(src))
+            elif stype == "mediawiki_page":
+                frames.append(self._collect_mediawiki_page(src))
             else:
-                texts.append(str(rec))
-                meta = extra_meta.copy() if extra_meta else {}
-                meta.update({"endpoint": endpoint, "params": params})
-                metas.append(json.dumps(meta, ensure_ascii=False))
+                raise ValueError(f"Unsupported source type: {stype}")
 
-        df = pd.DataFrame({
-            "text": texts,
-            "label": label,
-            "source": source_name,
-            "collected_at": utc_now_iso(),
-            "language": language,
-            "source_type": "api",
-            "url": endpoint,
-            "meta": metas,
-        })
-        return self._finalize(df, seed_role=(extra_meta or {}).get("seed_role"))
+        global_cap = self.collection_cfg.get("max_rows_per_source")
+        trimmed: list[pd.DataFrame] = []
+        for idx, (src, f) in enumerate(zip(sources, frames)):
+            name = src.get("name", src.get("type"))
+            eff = _effective_max_rows(src, global_cap)
+            n = len(f)
+            _log.info(
+                "source[%s] name=%s loaded_rows=%s effective_max_rows=%s",
+                idx,
+                name,
+                n,
+                eff if eff is not None else "null (unlimited)",
+            )
+            if eff is None:
+                _log.info("source[%s] trim skipped reason=no_row_limit", idx)
+                trimmed.append(f)
+                continue
+            if n > eff:
+                f = f.sample(n=eff, random_state=42).reset_index(drop=True)
+                _log.info("source[%s] trimmed_rows=%s (cap=%s)", idx, len(f), eff)
+            else:
+                _log.info("source[%s] trimmed_rows=%s (under cap)", idx, len(f))
+            trimmed.append(f)
+        frames = trimmed
 
-    def load_dataset(self, name: str, source: Literal["hf", "kaggle"] = "hf", *,
-                     source_name: Optional[str] = None,
-                     split: str = "train",
-                     config_name: Optional[str] = None,
-                     text_column: str = "text",
-                     label_column: Optional[str] = None,
-                     constant_label: Any = None,
-                     filters: Optional[list[dict[str, Any]]] = None,
-                     language: Optional[str] = None,
-                     extra_meta: Optional[dict[str, Any]] = None,
-                     max_rows: Optional[int] = None) -> pd.DataFrame:
-        """
-        Load open dataset from Hugging Face or Kaggle and map it into unified schema.
+        merged = pd.concat(frames, ignore_index=True)
+        merged = normalize_collection_schema(merged)
+        source_col = "source"
+        u_merged = int(merged[source_col].nunique()) if source_col in merged.columns else 0
+        _log.info("merge done total_rows=%s unique_sources=%s", len(merged), u_merged)
 
-        filters supports simple operations:
-          - {"column": "subset", "op": "in", "value": ["xstest-should-respond"]}
-          - {"column": "label", "op": "==", "value": 1}
-        """
-        if source_name is None:
-            source_name = name if source == "hf" else f"kaggle:{name}"
-
-        if source == "hf":
-            df = self._load_hf_dataset(name, split=split, config_name=config_name)
-        elif source == "kaggle":
-            df = self._load_kaggle_dataset(name)  # downloads into cache and reads as table
-        else:
-            raise ValueError(f"Unsupported source: {source}")
-
-        if filters:
-            df = self._apply_filters(df, filters)
-
-        if max_rows is not None:
-            df = df.head(int(max_rows))
-
-        if text_column not in df.columns:
-            raise ValueError(
-                f"Column '{text_column}' not found in dataset '{name}'. "
-                f"Available columns: {list(df.columns)[:30]}"
+        merged_cap = _coerce_row_cap(self.collection_cfg.get("max_merged_rows"))
+        _MERGED_SAMPLE_RS = 42
+        if merged_cap is not None and not merged.empty:
+            n_before = len(merged)
+            u_before = (
+                int(merged[source_col].nunique())
+                if source_col in merged.columns
+                else 0
+            )
+            merged = stratified_sample_by_source(
+                merged,
+                merged_cap,
+                source_col=source_col,
+                random_state=_MERGED_SAMPLE_RS,
+            )
+            n_after = len(merged)
+            u_after = (
+                int(merged[source_col].nunique())
+                if source_col in merged.columns
+                else 0
+            )
+            strat = (
+                "stratified_by_source"
+                if source_col in merged.columns
+                else "uniform_random"
+            )
+            _log.info(
+                "merged dataset sampled down before=%s after=%s strategy=%s random_state=%s "
+                "unique_sources_before=%s unique_sources_after=%s",
+                n_before,
+                n_after,
+                strat,
+                _MERGED_SAMPLE_RS,
+                u_before,
+                u_after,
             )
 
-        out = pd.DataFrame({
-            "text": df[text_column].astype(str),
-            "label": (df[label_column] if (label_column and label_column in df.columns) else constant_label),
-            "source": source_name,
-            "collected_at": utc_now_iso(),
-            "language": language,
-            "source_type": "hf_dataset" if source == "hf" else "kaggle_dataset",
-            "url": None,
-            "meta": [json.dumps(extra_meta or {}, ensure_ascii=False)] * len(df),
-        })
-        return self._finalize(out, seed_role=(extra_meta or {}).get("seed_role"))
+        save_merged = bool(self.collection_cfg.get("save_merged", True))
+        if save_merged:
+            merged_path = out_dir / "merged_raw.parquet"
+            merged.to_parquet(merged_path, index=False)
+            merged.to_csv(out_dir / "merged_raw.csv", index=False)
+            _log.info("saved merged_raw parquet=%s csv=%s", merged_path, out_dir / "merged_raw.csv")
 
-    def merge(self, sources: list[pd.DataFrame]) -> pd.DataFrame:
-        """
-        Merge multiple unified DataFrames, enforce schema, remove obvious bad rows.
-        """
-        if not sources:
-            return ensure_columns(pd.DataFrame(), self.STANDARD_COLUMNS)
-
-        merged = pd.concat(sources, ignore_index=True)
-
-        # basic normalization
-        merged["text"] = merged["text"].astype(str).fillna("").str.strip()
-        merged.loc[merged["text"] == "", "text"] = None
-        merged = merged[merged["text"].notna()]
-
-        # drop duplicates by uid (stable)
-        merged = merged.drop_duplicates(subset=["uid"], keep="first").reset_index(drop=True)
-
-        # enforce fixed schema
-        merged = ensure_columns(merged, self.STANDARD_COLUMNS)
-        return merged
-
-    # -------------------------
-    # High-level run
-    # -------------------------
-
-    def run(self, sources: Optional[list[dict[str, Any]]] = None) -> pd.DataFrame:
-        """
-        Collect from sources and return a unified DataFrame.
-
-        If sources is None, reads config.yaml -> sources.
-        """
-        sources = sources or self.raw_cfg.get("sources", [])
-        if not sources:
-            raise ValueError("No sources provided. Pass `sources=[...]` or set `sources:` in config.yaml.")
-
-        dfs: list[pd.DataFrame] = []
-        for src in sources:
-            stype: SourceType = src["type"]
-            name = src.get("name") or src.get("source_name") or stype
-
-            if stype == "hf_dataset":
-                df = self.load_dataset(
-                    name=src["name"],
-                    source="hf",
-                    source_name=name,
-                    split=src.get("split", "train"),
-                    config_name=src.get("config_name"),
-                    text_column=src.get("text_column", "text"),
-                    label_column=src.get("label_column"),
-                    constant_label=src.get("constant_label", src.get("label")),
-                    filters=src.get("filters"),
-                    language=src.get("language"),
-                    extra_meta=src.get("meta"),
-                    max_rows=src.get("max_rows", self.cfg.max_rows_per_source),
-                )
-            elif stype == "kaggle_dataset":
-                df = self.load_dataset(
-                    name=src["name"],
-                    source="kaggle",
-                    source_name=name,
-                    text_column=src.get("text_column", "text"),
-                    label_column=src.get("label_column"),
-                    constant_label=src.get("constant_label", src.get("label")),
-                    filters=src.get("filters"),
-                    language=src.get("language"),
-                    extra_meta=src.get("meta"),
-                    max_rows=src.get("max_rows", self.cfg.max_rows_per_source),
-                )
-            elif stype == "scrape":
-                df = self.scrape(
-                    url=src["url"],
-                    selector=src["selector"],
-                    source_name=name,
-                    label=src.get("label"),
-                    language=src.get("language"),
-                    extra_meta=src.get("meta"),
-                    max_items=src.get("max_items", self.cfg.max_rows_per_source),
-                )
-            elif stype == "api":
-                df = self.fetch_api(
-                    endpoint=src["endpoint"],
-                    params=src.get("params", {}),
-                    source_name=name,
-                    records_path=src.get("records_path"),
-                    text_field=src.get("text_field", "text"),
-                    label=src.get("label"),
-                    language=src.get("language"),
-                    extra_meta=src.get("meta"),
-                    max_items=src.get("max_items", self.cfg.max_rows_per_source),
-                )
-            else:
-                raise ValueError(f"Unknown source type: {stype}")
-
-            if self.cfg.save_per_source:
-                self._save_df(df, self.cfg.output_dir / f"{self._safe_filename(name)}.parquet")
-
-            dfs.append(df)
-
-        merged = self.merge(dfs)
-
-        if self.cfg.save_merged:
-            self._save_df(merged, self.cfg.output_dir / "merged_raw.parquet")
-            self._save_df(merged, self.cfg.output_dir / "merged_raw.csv")
+        self._run_collection_eda(merged)
 
         return merged
 
-    # -------------------------
-    # Internal helpers
-    # -------------------------
-
-    def _finalize(self, df: pd.DataFrame, seed_role: Optional[str] = None) -> pd.DataFrame:
-        """
-        Ensure fixed schema + create uid.
-        """
-        df = df.copy()
-        df["audio"] = None
-        df["image"] = None
-        if "source" not in df.columns:
-            df["source"] = "unknown"
-        if "collected_at" not in df.columns:
-            df["collected_at"] = utc_now_iso()
-        if "meta" not in df.columns:
-            df["meta"] = None
-
-        # seed_role is stored inside meta, but also influences uid so different transforms won't collide
-        # (If you later generate rewrites, set seed_role differently.)
-        if seed_role is None:
-            # try to extract from meta json (first row)
-            try:
-                if len(df) > 0 and isinstance(df.iloc[0].get("meta"), str):
-                    m = json.loads(df.iloc[0]["meta"])
-                    seed_role = m.get("seed_role")
-            except Exception:
-                seed_role = None
-
-        def _make_uid(row: pd.Series) -> str:
-            t = str(row.get("text") or "")
-            src = str(row.get("source") or "")
-            role = str(seed_role or "")
-            return sha1_hex(f"{src}::{role}::{t}")
-
-        df["uid"] = df.apply(_make_uid, axis=1)
-
-        # enforce fixed schema order
-        df = ensure_columns(df, self.STANDARD_COLUMNS)
-
-        # final clean
-        df["text"] = df["text"].astype(str).fillna("").str.strip()
-        df.loc[df["text"] == "", "text"] = None
-        df = df[df["text"].notna()].reset_index(drop=True)
-        return df
-
-    def _load_hf_dataset(self, name: str, *, split: str, config_name: Optional[str] = None) -> pd.DataFrame:
-        if hf_load_dataset is None:
-            raise ImportError("datasets is not installed. `pip install datasets`")
-        if config_name:
-            ds = hf_load_dataset(name, config_name, split=split)
-        else:
-            ds = hf_load_dataset(name, split=split)
-        return ds.to_pandas()
-
-    def _load_kaggle_dataset(self, dataset: str) -> pd.DataFrame:
-        """
-        Download Kaggle dataset to cache and return as DataFrame.
-
-        Requires:
-          - `pip install kaggle`
-          - KAGGLE_USERNAME, KAGGLE_KEY or ~/.kaggle/kaggle.json
-        """
-        cache_dir = self.cfg.output_dir / "_kaggle_cache" / self._safe_filename(dataset)
-        cache_dir.mkdir(parents=True, exist_ok=True)
-
-        # Download+unzip
-        cmd = [
-            "kaggle", "datasets", "download",
-            "-d", dataset,
-            "-p", str(cache_dir),
-            "--unzip",
-        ]
+    def _run_collection_eda(self, merged: pd.DataFrame) -> None:
+        eda_cfg = self.collection_cfg.get("eda") or {}
+        if not bool(eda_cfg.get("enabled", True)):
+            _log.info("collection.eda.enabled is false; skipping EDA")
+            return
+        out_dir = Path(eda_cfg.get("output_dir", "reports/collection_eda"))
         try:
-            subprocess.run(cmd, check=True, capture_output=True, text=True)
-        except FileNotFoundError as e:
-            raise RuntimeError("Kaggle CLI not found. Install with `pip install kaggle`.") from e
-        except subprocess.CalledProcessError as e:
-            raise RuntimeError(
-                "Kaggle download failed. Ensure Kaggle credentials are set.\n"
-                f"stderr:\n{e.stderr}"
-            ) from e
+            report = collection_save_eda(
+                merged,
+                out_dir,
+                top_content_words_k=int(eda_cfg.get("top_content_words_k", 20)),
+                content_word_min_len=int(eda_cfg.get("content_word_min_len", 3)),
+                include_english_stopwords=bool(eda_cfg.get("include_english_stopwords", True)),
+            )
+            _log.info("collection code-based EDA completed output_dir=%s", out_dir)
+        except Exception as e:
+            _log.exception("collection EDA (code) failed: %s", e)
+            return
 
-        # Heuristic: read the first CSV/JSONL in the cache dir
-        files = list(cache_dir.glob("**/*"))
-        table_files = [p for p in files if p.suffix.lower() in {".csv", ".json", ".jsonl", ".parquet"}]
-        if not table_files:
-            raise RuntimeError(f"No readable table files found in Kaggle dataset cache: {cache_dir}")
+        if not bool(eda_cfg.get("llm_summary_enabled", True)):
+            return
+        llm_cfg = self.collection_cfg.get("llm") or {}
+        if not bool(llm_cfg.get("enabled", True)):
+            _log.info("collection.llm.enabled is false; skipping LLM EDA summary")
+            return
 
-        p = sorted(table_files, key=lambda x: x.stat().st_size, reverse=True)[0]
+        llm_path = out_dir / "eda_llm_summary.md"
+        try:
+            self.summarize_eda(merged, report, llm_path)
+        except Exception as e:
+            _log.warning(
+                "code-based EDA completed; LLM summary failed (collection stage continues): %s",
+                e,
+                exc_info=True,
+            )
 
-        if p.suffix.lower() == ".csv":
-            return pd.read_csv(p)
-        if p.suffix.lower() == ".parquet":
-            return pd.read_parquet(p)
-        if p.suffix.lower() in {".json", ".jsonl"}:
-            return pd.read_json(p, lines=True)
-        raise RuntimeError(f"Unsupported Kaggle file format: {p}")
+    def eda(self, df: pd.DataFrame) -> dict[str, Any]:
+        """Code-only EDA statistics (no LLM)."""
+        ec = self.collection_cfg.get("eda") or {}
+        return collection_eda_compute(
+            df,
+            top_content_words_k=int(ec.get("top_content_words_k", 20)),
+            content_word_min_len=int(ec.get("content_word_min_len", 3)),
+            include_english_stopwords=bool(ec.get("include_english_stopwords", True)),
+        )
 
-    def _apply_filters(self, df: pd.DataFrame, filters: list[dict[str, Any]]) -> pd.DataFrame:
-        out = df
-        for f in filters:
-            col = f["column"]
-            op = f.get("op", "==")
-            val = f["value"]
-            if col not in out.columns:
-                raise ValueError(f"Filter column '{col}' not in dataset columns.")
-            if op == "==":
-                out = out[out[col] == val]
-            elif op == "!=":
-                out = out[out[col] != val]
-            elif op == "in":
-                out = out[out[col].isin(val)]
-            elif op == "not_in":
-                out = out[~out[col].isin(val)]
+    def save_eda(self, df: pd.DataFrame, out_dir: str | Path) -> dict[str, Any]:
+        """Save EDA tables/plots and ``eda_summary.md`` under ``out_dir``."""
+        ec = self.collection_cfg.get("eda") or {}
+        return collection_save_eda(
+            df,
+            out_dir,
+            top_content_words_k=int(ec.get("top_content_words_k", 20)),
+            content_word_min_len=int(ec.get("content_word_min_len", 3)),
+            include_english_stopwords=bool(ec.get("include_english_stopwords", True)),
+        )
+
+    def summarize_eda(
+        self,
+        df: pd.DataFrame,
+        eda_report: dict[str, Any],
+        out_path: str | Path,
+    ) -> str:
+        """
+        LLM interpretation of precomputed ``eda_report``; writes ``eda_llm_summary.md``.
+        Does not recompute statistics. Safe to call when LLM is disabled (returns "").
+        """
+        out_path = Path(out_path)
+        llm_cfg = self.collection_cfg.get("llm") or {}
+        if not bool(llm_cfg.get("enabled", True)):
+            return ""
+        if not self.llm_enabled:
+            _log.warning("LLM EDA summary skipped: client not available (set %s)", self.llm_config.api_key_env)
+            return ""
+
+        _log.info(
+            "LLM collection EDA (invoke): base_url=%s model=%s api_key_env=%s",
+            self.llm_config.base_url,
+            self.llm_config.model,
+            self.llm_config.api_key_env,
+        )
+
+        # region agent log
+        _DBG_LOG = "/Users/dekovaleva/PythonProjects/ru_fp_bench/.cursor/debug-5d942c.log"
+
+        def _dbg_eda(hypothesis_id: str, location: str, message: str, data: dict[str, Any]) -> None:
+            try:
+                with open(_DBG_LOG, "a", encoding="utf-8") as _df:
+                    _df.write(
+                        json.dumps(
+                            {
+                                "sessionId": "5d942c",
+                                "timestamp": int(time.time() * 1000),
+                                "hypothesisId": hypothesis_id,
+                                "location": location,
+                                "message": message,
+                                "data": data,
+                                "runId": "pre-fix",
+                            },
+                            ensure_ascii=False,
+                        )
+                        + "\n"
+                    )
+            except Exception:
+                pass
+
+        _dbg_eda("H-B", "summarize_eda:post_invoke_log", "after invoke log", {})
+        # endregion
+
+        t_json = time.monotonic()
+        report_json = json.dumps(eda_report, ensure_ascii=False, indent=2, default=str)
+        if len(report_json) > 14_000:
+            report_json = report_json[:14_000] + "\n…(truncated)…"
+        json_ms = (time.monotonic() - t_json) * 1000
+
+        t_samples = time.monotonic()
+        samples_md = self._eda_samples_markdown(df)
+        samples_ms = (time.monotonic() - t_samples) * 1000
+
+        # region agent log
+        _dbg_eda(
+            "H-B",
+            "summarize_eda:payload_built",
+            "json and samples ready",
+            {"json_dump_ms": round(json_ms, 2), "samples_ms": round(samples_ms, 2), "report_json_len": len(report_json)},
+        )
+        # endregion
+
+        system = _EDA_LLM_SYSTEM_PROMPT
+        user = (
+            "## EDA report (JSON)\n\n```json\n"
+            + report_json
+            + "\n```\n\n## Примеры по источникам\n\n"
+            + samples_md
+        )
+
+        eda_section = self.collection_cfg.get("eda") or {}
+        raw_eda_timeout = eda_section.get("llm_request_timeout_s")
+        if raw_eda_timeout is not None:
+            eda_request_timeout = float(raw_eda_timeout)
+        else:
+            eda_request_timeout = max(float(self.llm_config.timeout_s), 240.0)
+
+        # region agent log
+        _dbg_eda(
+            "H-A",
+            "summarize_eda:before_llm_generate",
+            "sizes",
+            {
+                "system_len": len(system),
+                "user_len": len(user),
+                "total_chars": len(system) + len(user),
+                "eda_request_timeout": eda_request_timeout,
+            },
+        )
+        # endregion
+
+        try:
+            t_llm = time.monotonic()
+            text = self.llm_generate(user, system=system, request_timeout=eda_request_timeout).strip()
+            # region agent log
+            _dbg_eda(
+                "H-A",
+                "summarize_eda:after_llm_generate",
+                "llm returned",
+                {"elapsed_ms": round((time.monotonic() - t_llm) * 1000, 2), "response_text_len": len(text)},
+            )
+            # endregion
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            out_path.write_text(text + "\n", encoding="utf-8")
+            _log.info("LLM collection EDA summary written %s", out_path)
+            return text
+        except Exception as e:
+            # region agent log
+            _dbg_eda(
+                "H-A",
+                "summarize_eda:llm_exception",
+                "llm failed",
+                {"error_type": type(e).__name__, "error_msg": str(e)[:500]},
+            )
+            # endregion
+            _log.warning("LLM EDA summary call failed: %s", e, exc_info=True)
+            return ""
+
+    def _eda_samples_markdown(self, df: pd.DataFrame, max_per_source: int = 2, clip: int = 500) -> str:
+        if df.empty or "source" not in df.columns or "text" not in df.columns:
+            return "(no samples)"
+        lines: list[str] = []
+        for src, sub in df.groupby(df["source"].astype(str)):
+            lines.append(f"### {src} (n={len(sub)})")
+            for _, row in sub.head(max_per_source).iterrows():
+                t = str(row.get("text", ""))[:clip].replace("\n", " ")
+                lines.append(f"- {t!r}")
+        return "\n".join(lines) if lines else "(no samples)"
+
+    def _empty_row(self) -> dict[str, Any]:
+        return {c: None for c in COLLECTION_COLUMNS}
+
+    def _collect_hf(self, src: dict[str, Any]) -> pd.DataFrame:
+        from datasets import load_dataset
+
+        name = src["name"]
+        split = src.get("split", "train")
+        text_column = src["text_column"]
+        language = src.get("language")
+        source_name = src.get("name", name).split("/")[-1]
+        label_column = src.get("label_column")
+        constant_label = src.get("constant_label")
+        unified_label = src.get("unified_label")
+        raw_label_name = src.get("raw_label_name")
+        meta_extra = src.get("meta") or {}
+
+        cfg_name = src.get("config_name")
+        if cfg_name:
+            ds = load_dataset(name, cfg_name, split=split)
+        else:
+            ds = load_dataset(name, split=split)
+
+        for filt in src.get("filters") or []:
+            col = filt["column"]
+            op = filt.get("op", "eq")
+            val = filt.get("value")
+            if op == "in" and isinstance(val, (list, tuple)):
+
+                def _keep(ex: dict[str, Any], c: str = col, allowed: set[Any] = set(val)) -> bool:
+                    return ex.get(c) in allowed
+
+                ds = ds.filter(_keep)
+            elif op == "eq":
+
+                def _eq(ex: dict[str, Any], c: str = col, v: Any = val) -> bool:
+                    return ex.get(c) == v
+
+                ds = ds.filter(_eq)
             else:
                 raise ValueError(f"Unsupported filter op: {op}")
-        return out.reset_index(drop=True)
 
-    def _save_df(self, df: pd.DataFrame, path: Path) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        if path.suffix.lower() == ".parquet":
-            df.to_parquet(path, index=False)
-        elif path.suffix.lower() == ".csv":
-            df.to_csv(path, index=False)
-        else:
-            # default to parquet
-            df.to_parquet(path.with_suffix(".parquet"), index=False)
+        if unified_label is not None:
+            _log.info(
+                "hf_dataset name=%s using unified_label=%s raw_label_name=%s",
+                name,
+                unified_label,
+                raw_label_name,
+            )
 
-    @staticmethod
-    def _safe_filename(name: str) -> str:
-        return "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in name).strip("_")
+        rows: list[dict[str, Any]] = []
+        for i, ex in enumerate(ds):
+            text = ex.get(text_column)
+            if text is None or (isinstance(text, str) and not text.strip()):
+                continue
+            text_s = str(text).strip()
+            raw_hf_label = ex.get(label_column) if label_column else None
+            if unified_label is not None:
+                label = str(unified_label)
+            elif label_column:
+                label = raw_hf_label
+            else:
+                label = constant_label
+            uid = make_uid(source_name, text_s, str(i))
+            url = ex.get("url") or ex.get("link")
+            row = self._empty_row()
+            meta = dict(meta_extra)
+            meta["hf_index"] = i
+            if unified_label is not None and label_column:
+                meta["raw_label"] = raw_hf_label
+            if unified_label is not None and raw_label_name:
+                meta["raw_label_name"] = str(raw_label_name)
+            row.update(
+                {
+                    "uid": uid,
+                    "text": text_s,
+                    "label": label,
+                    "source": source_name,
+                    "collected_at": utc_now_iso(),
+                    "language": language,
+                    "source_type": "hf_dataset",
+                    "url": str(url) if url else None,
+                    "meta": dumps_meta(meta),
+                },
+            )
+            rows.append(row)
+
+        df = pd.DataFrame(rows)
+        per = bool(self.collection_cfg.get("save_per_source", True))
+        if per and len(df):
+            out_dir = Path(self.collection_cfg.get("output_dir", self.paths.raw_dir))
+            safe = source_name.replace("/", "_")
+            df.to_parquet(out_dir / f"{safe}.parquet", index=False)
+        return df
+
+    def _collect_api(self, src: dict[str, Any]) -> pd.DataFrame:
+        if _is_mediawiki_categorymembers_source(src):
+            return self._collect_mediawiki_categorymembers(src)
+        return self._collect_api_json_once(src)
+
+    def _fetch_mediawiki_categorymembers_all(self, src: dict[str, Any]) -> list[dict[str, Any]]:
+        endpoint = src["endpoint"]
+        base_params = dict(src.get("params") or {})
+        base_params.setdefault("format", "json")
+        timeout = float(self.collection_cfg.get("request_timeout_s", 30))
+        headers = _api_request_headers(self.collection_cfg)
+        source_name = src.get("name", "api_source")
+
+        all_members: list[dict[str, Any]] = []
+        continue_params: dict[str, Any] = {}
+        page_n = 0
+        while True:
+            params = {**base_params, **continue_params}
+            _log.info(
+                "mediawiki api_mode=categorymembers source=%s request_index=%s",
+                source_name,
+                page_n,
+            )
+            try:
+                resp = requests.get(endpoint, params=params, headers=headers, timeout=timeout)
+                resp.raise_for_status()
+            except requests.HTTPError as e:
+                code = e.response.status_code if e.response is not None else "?"
+                raise RuntimeError(
+                    f"API source {source_name!r} HTTP {code} for URL {endpoint!r}"
+                ) from e
+            except requests.RequestException as e:
+                raise RuntimeError(
+                    f"API source {source_name!r} request failed for URL {endpoint!r}: {e}"
+                ) from e
+            data = resp.json()
+            batch = data.get("query", {}).get("categorymembers")
+            if batch is None:
+                raise ValueError(
+                    f"MediaWiki categorymembers: missing query.categorymembers for {source_name!r}; check params"
+                )
+            if not isinstance(batch, list):
+                raise ValueError("query.categorymembers is not a list")
+            all_members.extend(batch)
+            cont = data.get("continue")
+            if not cont:
+                break
+            continue_params = dict(cont)
+            page_n += 1
+            if page_n > 5000:
+                raise RuntimeError(f"categorymembers pagination exceeded safety limit for {source_name!r}")
+
+        _log.info(
+            "mediawiki categorymembers source=%s total_members=%s",
+            source_name,
+            len(all_members),
+        )
+        return all_members
+
+    def _collect_mediawiki_categorymembers(self, src: dict[str, Any]) -> pd.DataFrame:
+        records = self._fetch_mediawiki_categorymembers_all(src)
+        return self._dataframe_from_api_record_list(src, records, source_type="api")
+
+    def _collect_api_json_once(self, src: dict[str, Any]) -> pd.DataFrame:
+        endpoint = src["endpoint"]
+        params = dict(src.get("params") or {})
+        records_path: list[str] = src["records_path"]
+        source_name = src.get("name", "api_source")
+        timeout = float(self.collection_cfg.get("request_timeout_s", 30))
+        headers = _api_request_headers(self.collection_cfg)
+
+        _log.info(
+            "api request source=%s endpoint=%s timeout_s=%s (single-shot JSON)",
+            source_name,
+            endpoint,
+            timeout,
+        )
+        try:
+            resp = requests.get(endpoint, params=params, headers=headers, timeout=timeout)
+            resp.raise_for_status()
+        except requests.HTTPError as e:
+            code = e.response.status_code if e.response is not None else "?"
+            raise RuntimeError(
+                f"API source {source_name!r} HTTP {code} for URL {endpoint!r}"
+            ) from e
+        except requests.RequestException as e:
+            raise RuntimeError(
+                f"API source {source_name!r} request failed for URL {endpoint!r}: {e}"
+            ) from e
+        data = resp.json()
+        records = _get_nested(data, records_path)
+        if not isinstance(records, list):
+            raise ValueError(f"API records at {records_path} is not a list")
+        return self._dataframe_from_api_record_list(src, records, source_type="api")
+
+    def _dataframe_from_api_record_list(
+        self,
+        src: dict[str, Any],
+        records: list[Any],
+        *,
+        source_type: str,
+    ) -> pd.DataFrame:
+        text_field = src["text_field"]
+        label = src.get("label")
+        language = src.get("language")
+        source_name = src.get("name", "api_source")
+        meta_extra = src.get("meta") or {}
+        endpoint = src["endpoint"]
+
+        rows: list[dict[str, Any]] = []
+        for i, rec in enumerate(records):
+            if not isinstance(rec, dict):
+                text_s = str(rec).strip()
+            else:
+                tv = rec.get(text_field)
+                text_s = str(tv).strip() if tv is not None else ""
+            if not text_s:
+                continue
+            uid = make_uid(source_name, text_s, str(i))
+            row = self._empty_row()
+            meta = dict(meta_extra)
+            meta["api_index"] = i
+            row.update(
+                {
+                    "uid": uid,
+                    "text": text_s,
+                    "label": label,
+                    "source": source_name,
+                    "collected_at": utc_now_iso(),
+                    "language": language,
+                    "source_type": source_type,
+                    "url": endpoint,
+                    "meta": dumps_meta(meta),
+                },
+            )
+            rows.append(row)
+
+        df = pd.DataFrame(rows)
+        per = bool(self.collection_cfg.get("save_per_source", True))
+        if per and len(df):
+            out_dir = Path(self.collection_cfg.get("output_dir", self.paths.raw_dir))
+            safe = str(source_name).replace("/", "_")
+            df.to_parquet(out_dir / f"{safe}.parquet", index=False)
+        return df
+
+    def _collect_mediawiki_page(self, src: dict[str, Any]) -> pd.DataFrame:
+        endpoint = src["endpoint"]
+        params = dict(src.get("params") or {})
+        params.setdefault("action", "parse")
+        params.setdefault("format", "json")
+        if "prop" not in params:
+            params["prop"] = "wikitext"
+
+        parse_mode = str(src.get("parse_mode", "mediawiki_wikitext_list"))
+        wikitext_cfg = dict(src.get("wikitext_parser_config") or {})
+
+        label = src.get("label")
+        language = src.get("language")
+        source_name = str(src.get("name", "mediawiki_page"))
+        meta_extra = dict(src.get("meta") or {})
+        timeout = float(self.collection_cfg.get("request_timeout_s", 30))
+        headers = _api_request_headers(self.collection_cfg)
+
+        _log.info(
+            "mediawiki_page source=%s endpoint=%s parse_mode=%s params_keys=%s",
+            source_name,
+            endpoint,
+            parse_mode,
+            sorted(params.keys()),
+        )
+
+        try:
+            resp = requests.get(endpoint, params=params, headers=headers, timeout=timeout)
+            resp.raise_for_status()
+        except requests.HTTPError as e:
+            code = e.response.status_code if e.response is not None else "?"
+            raise RuntimeError(
+                f"mediawiki_page {source_name!r} HTTP {code} for URL {endpoint!r}"
+            ) from e
+        except requests.RequestException as e:
+            raise RuntimeError(
+                f"mediawiki_page {source_name!r} request failed for URL {endpoint!r}: {e}"
+            ) from e
+
+        data = resp.json()
+        parse_block = data.get("parse") or {}
+        wikitext = ""
+        wt = parse_block.get("wikitext")
+        if isinstance(wt, dict):
+            wikitext = str(wt.get("*") or "")
+        elif isinstance(wt, str):
+            wikitext = wt
+
+        if not wikitext.strip():
+            raise RuntimeError(
+                f"mediawiki_page {source_name!r}: empty wikitext (check title/page param and API errors: {data.get('error', {})})"
+            )
+
+        texts = apply_wikitext_mode(parse_mode, wikitext, **wikitext_cfg)
+        _log.info("mediawiki_page source=%s parse_mode=%s extracted_lines=%s", source_name, parse_mode, len(texts))
+
+        rows: list[dict[str, Any]] = []
+        for i, text_s in enumerate(texts):
+            text_s = str(text_s).strip()
+            if not text_s:
+                continue
+            uid = make_uid(source_name, text_s, str(i))
+            row = self._empty_row()
+            meta = dict(meta_extra)
+            meta["mediawiki_parse_mode"] = parse_mode
+            meta["wikitext_line_index"] = i
+            row.update(
+                {
+                    "uid": uid,
+                    "text": text_s,
+                    "label": label,
+                    "source": source_name,
+                    "collected_at": utc_now_iso(),
+                    "language": language,
+                    "source_type": "mediawiki_page",
+                    "url": endpoint,
+                    "meta": dumps_meta(meta),
+                },
+            )
+            rows.append(row)
+
+        df = pd.DataFrame(rows)
+        per = bool(self.collection_cfg.get("save_per_source", True))
+        if per and len(df):
+            out_dir = Path(self.collection_cfg.get("output_dir", self.paths.raw_dir))
+            safe = source_name.replace("/", "_")
+            df.to_parquet(out_dir / f"{safe}.parquet", index=False)
+        return df
+
+
+__all__ = ["DataCollectionAgent", "normalize_collection_schema"]
