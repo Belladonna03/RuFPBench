@@ -93,7 +93,7 @@ def run_pipeline(config_path: str | Path) -> int:
     _log.info("step=annotation started input=%s", interim_clean)
     ann = AnnotationAgent(modality="text", config=config_path)
     labeled = ann.run(interim_clean, output_parquet=labeled_auto)
-    rq_path = Path(cfg.get("hitl") or {}).get("review_queue_path", paths.labeled_dir / "review_queue.csv")
+    rq_path = Path((cfg.get("hitl") or {}).get("review_queue_path", paths.labeled_dir / "review_queue.jsonl"))
     rq_rows = 0
     if rq_path.exists():
         try:
@@ -111,16 +111,17 @@ def run_pipeline(config_path: str | Path) -> int:
     # 5) HITL gate
     stop, reason = should_stop_for_hitl(cfg, root)
     if stop:
-        corrected = Path((cfg.get("hitl") or {}).get("corrected_queue_path", root / "data/labeled/review_queue_corrected.csv"))
+        corrected = Path((cfg.get("hitl") or {}).get("corrected_queue_path", root / "data/labeled/review_results.jsonl"))
         _log.warning(
-            "stopped at HITL gate: %s (create or complete %s then re-run)",
+            "stopped at HITL gate: %s (run `python run_agent.py --agent annotation --review-console --input %s --output %s` then re-run)",
             reason.strip(),
+            rq_path,
             corrected,
         )
-        rq = (cfg.get("hitl") or {}).get("review_queue_path", "data/labeled/review_queue.csv")
+        rq = (cfg.get("hitl") or {}).get("review_queue_path", "data/labeled/review_queue.jsonl")
         root_rq = Path(rq)
         if root_rq.exists():
-            shutil.copy2(root_rq, root / "review_queue.csv")
+            shutil.copy2(root_rq, root / root_rq.name)
         return 2
 
     # 6) Merge labels → final dataset
@@ -146,7 +147,8 @@ def run_pipeline(config_path: str | Path) -> int:
         labeled_seed = pool_full.sample(n=start_n, random_state=int(cfg.get("active_learning", {}).get("random_state", 42)))
         remaining = pool_full.drop(index=labeled_seed.index)
         if "final_label" in labeled_seed.columns:
-            labeled_seed = labeled_seed.rename(columns={"final_label": "label"})
+            labeled_seed = labeled_seed.copy()
+            labeled_seed["label"] = labeled_seed["final_label"]
         elif "label" not in labeled_seed.columns:
             raise ValueError("al_select requires final_label or label on merged dataset")
         batch = agent.select_batch(
@@ -179,7 +181,8 @@ def run_pipeline(config_path: str | Path) -> int:
         al_agent = ActiveLearningAgent(config=cfg)
         df = read_table(final_ds)
         if "final_label" in df.columns:
-            df = df.rename(columns={"final_label": "label"})
+            df = df.copy()
+            df["label"] = df["final_label"]
         elif "label" not in df.columns:
             _log.warning("step=active_learning_curves skipped reason=no_label_column")
         else:

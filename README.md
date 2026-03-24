@@ -32,7 +32,7 @@ Log lines look like: `LEVEL [component] message` (e.g. `[pipeline]` for orchestr
 python3 -m pip install -r requirements.txt
 ```
 
-Copy `.env.example` to `.env` and set secrets (e.g. `HF_TOKEN` for Hugging Face Hub, **`DATA_COLLECTION_PROXYAPI_API_KEY`** for collection-stage LLM EDA interpretation). On startup, `load_config()` loads the first `.env` found next to `config.yaml` (walking up parent directories) or `./.env` in the current working directory, so `datasets` / `huggingface_hub` receive `HF_TOKEN` via `os.environ`. You can also `export HF_TOKEN=...` in the shell.
+Copy `.env.example` to `.env` and set secrets (e.g. `HF_TOKEN` for Hugging Face Hub and **`PROXYAPI_API_KEY`** for ProxyAPI OpenRouter free models). On startup, `load_config()` loads the first `.env` found next to `config.yaml` (walking up parent directories) or `./.env` in the current working directory, so `datasets` / `huggingface_hub` receive `HF_TOKEN` via `os.environ`. You can also `export HF_TOKEN=...` in the shell.
 
 ## Run the full pipeline
 
@@ -42,7 +42,7 @@ python run_pipeline.py --config config.yaml
 
 Stages (in order): **collection → rewrite (optional) → quality → annotation → HITL gate (optional stop) → merge corrections → AL batch export (optional) → AL curves (optional) → training (optional) → reports.**
 
-If `hitl.human_mode = stop_if_missing` and `data/labeled/review_queue.csv` exists with rows but `data/labeled/review_queue_corrected.csv` is missing or incomplete, the pipeline **exits with code 2** and prints what to do next.
+If `hitl.human_mode = stop_if_missing` and `data/labeled/review_queue.jsonl` exists with rows but `data/labeled/review_results.jsonl` is missing or incomplete, the pipeline **exits with code 2** and prints what to do next.
 
 After editing the corrected queue:
 
@@ -66,10 +66,142 @@ python run_agent.py --agent collection --config config.yaml
 python run_agent.py --agent rewrite   --config config.yaml --input data/raw/merged_raw.parquet
 python run_agent.py --agent quality   --config config.yaml --input data/interim/rewrite.parquet
 python run_agent.py --agent annotation --config config.yaml --input data/interim/clean.parquet
+python run_agent.py --agent annotation --config config.yaml --review-console --input data/labeled/review_queue.jsonl --output data/labeled/review_results.jsonl
 python run_agent.py --agent al        --config config.yaml --input data/labeled/final_dataset.parquet
 ```
 
 Aliases: `data_collection`, `borderline_rewrite`, `data_quality`, `active_learning`.
+
+## Rewrite Modes
+
+`BorderlineRewriteAgent` supports two generation modes controlled by `rewrite.defaults.n_variants_per_input` and optional per-policy overrides in `rewrite.policies[*].n_variants_per_input`.
+
+- `single-variant`: `n_variants_per_input: 1`
+- `multi-variant`: `n_variants_per_input: > 1`
+
+Both modes now use the same prompt contract:
+
+- `rewrite.borderline_definition`
+- `rewrite.policies[*].generation_goal`
+- `rewrite.policies[*].prompt_style.instructions`
+- strategy-specific task rules inside `agents/rewrite_agent.py`
+
+The difference is only the output shape:
+
+- `single-variant` asks for the best single candidate
+- `multi-variant` asks for several distinct candidates separated by `rewrite.modes.default.variant_separator`
+
+### Rewrite Config Knobs
+
+Core generation controls in `config.yaml`:
+
+- `rewrite.defaults.n_variants_per_input`: global default for single vs multi mode
+- `rewrite.policies[*].n_variants_per_input`: per-policy override
+- `rewrite.modes.single_variant.best_candidate_bias`: extra guidance for picking one strongest answer
+- `rewrite.modes.multi_variant.diversity_bias`: extra guidance for making variants meaningfully different
+- `rewrite.modes.default.variant_separator`: separator expected in multi-output mode
+- `rewrite.validation.*`: lightweight generation guardrails (format / artifact cleanup), not the full downstream quality stage
+- `rewrite.policies[*].prompt_style.instructions`: task tuning for each strategy
+- `rewrite.policies[*].strategy`: one of `generate_borderline_ru`, `rewrite_unsafe_to_borderline_ru`, `translate_and_adapt_to_ru_borderline`
+- `rewrite.runtime.*`: concurrency, progress logs, retry behavior
+- `rewrite.llm.*`: model, base URL, timeout, token limit
+
+### Minimal Single-Variant Example
+
+```yaml
+rewrite:
+  defaults:
+    n_variants_per_input: 1
+  policies:
+    - name: wiki_native_to_ru_borderline
+      strategy: generate_borderline_ru
+      n_variants_per_input: 1
+```
+
+Use this mode when you want one best candidate per input row.
+
+### Minimal Multi-Variant Example
+
+```yaml
+rewrite:
+  defaults:
+    n_variants_per_input: 3
+  modes:
+    default:
+      variant_separator: ---
+    multi_variant:
+      diversity_bias:
+        - Spread variants across framing, context, or speech register.
+        - Avoid near-duplicates.
+  policies:
+    - name: wiki_native_to_ru_borderline
+      strategy: generate_borderline_ru
+      n_variants_per_input: 3
+```
+
+Use this mode when you want several candidate rewrites per input and will select or score them later in the pipeline.
+
+### Strategy-Specific Prompt Tuning
+
+`generate_borderline_ru`
+
+- Best for idioms, phraseologisms, slangy or noisy lexical seeds.
+- Tune `prompt_style.instructions` toward meaning, usage, tone, context, and example requests.
+- Avoid dictionary-style outputs and bare lexical repeats.
+
+`rewrite_unsafe_to_borderline_ru`
+
+- Best for unsafe Russian donor texts that should become safe-but-borderline prompts.
+- Tune `prompt_style.instructions` toward safe landing zones: explanation, neutral analysis, harmless context, technical or language clarification.
+- Keep thematic proximity, but remove explicit harmful intent.
+
+`translate_and_adapt_to_ru_borderline`
+
+- Best for safe English seeds that need natural Russian adaptation.
+- Tune `prompt_style.instructions` toward idiomatic Russian phrasing and pragmatic adaptation.
+- Prefer meaning transfer over literal translation.
+
+### Validation Layer
+
+`rewrite.validation` performs lightweight generation validation inside the rewrite step:
+
+- rejects literal `__SKIP__`
+- rejects obvious meta-output like `вот вариант`
+- rejects list-like or dictionary-like outputs when the result should be a user query
+- rejects multi-answer blobs in `single-variant`
+- normalizes multi-output splitting and deduplicates variants
+
+This layer is only an operational guardrail for generation. Full candidate filtering, ranking, and evaluation still belong to downstream stages.
+
+### Run Rewrite Only
+
+Single-agent debug run:
+
+```bash
+python run_agent.py --agent rewrite --config config.yaml --input data/raw/merged_raw.parquet
+```
+
+Custom output path:
+
+```bash
+python run_agent.py --agent rewrite --config config.yaml --input data/raw/merged_raw.parquet --output data/interim/rewrite_multi.parquet
+```
+
+Switch between `single-variant` and `multi-variant` by editing `n_variants_per_input` in `config.yaml`; no code change is needed.
+
+### Run Inside Full Pipeline
+
+The full pipeline uses the same rewrite settings:
+
+```bash
+python run_pipeline.py --config config.yaml
+```
+
+Pipeline order remains:
+
+- `collection -> rewrite -> quality -> annotation -> ...`
+
+If you want to compare single vs multi generation, create two config variants and run the pipeline separately for each.
 
 ## Imports (for notebooks)
 
@@ -173,8 +305,49 @@ Notes:
 
 - The agent uses rule-based weak supervision tailored to `candidate_benign_borderline`, `plain_benign_control`, and `unsafe_or_not_suitable`.
 - It produces `predicted_label`, `confidence`, `label_reason`, and `label_signals`.
-- Low-confidence examples are automatically routed to a review queue for HITL.
+- Low-confidence or otherwise suspicious examples are automatically routed to a review queue for HITL.
+- Main HITL path is now console-first: `auto_label -> flag_for_review -> export_review_queue -> review_in_console -> merge_review_decisions`.
+- Label Studio export is still available for compatibility, but it is no longer the primary operational path.
 - The coursework notebook for this assignment is `notebooks/annotation_agent.ipynb`.
+
+### Console-First HITL Workflow
+
+After `annotation` step, the pipeline writes:
+
+- `data/labeled/review_queue.jsonl` — review subset with predicted label, confidence, reason codes, and empty human decision fields
+- `data/labeled/review_results.jsonl` — reviewer decisions created by the console review loop
+- `data/labeled/labelstudio_import.json` — full compatibility export for Label Studio
+- `data/labeled/labelstudio_low_confidence.json` — optional Label Studio export of the review subset
+
+Primary workflow:
+
+1. Run annotation:
+
+```bash
+python run_agent.py --agent annotation --config config.yaml --input data/interim/clean.parquet
+```
+
+2. Review flagged samples in console:
+
+```bash
+python run_agent.py --agent annotation --config config.yaml --review-console --input data/labeled/review_queue.jsonl --output data/labeled/review_results.jsonl
+```
+
+3. Re-run the full pipeline:
+
+```bash
+python run_pipeline.py --config config.yaml
+```
+
+The review loop supports:
+
+- `a` — accept auto label
+- `1..N` — assign one of the configured labels
+- `s` — skip sample
+- `n` — add a note
+- `q` — save and quit
+
+Repeated runs resume from existing decisions in `review_results.jsonl`.
 
 ## Assignment 4: ActiveLearningAgent
 
@@ -234,8 +407,13 @@ Uses `rewrite` settings from `config.yaml` (`rewrite.enabled`, `rewrite.mode`, e
 - HF sources need **internet** and the `datasets` package.
 - HTTP API sources (e.g. Wiktionary `action=query`) need a proper **User-Agent**; set `WIKIMEDIA_CONTACT_EMAIL` (and optionally `WIKIMEDIA_USER_AGENT_APP`) in the environment — see `.env.example`. Do not put contact email in `config.yaml`.
 - Wiktionary and other wikis are read via **`https://…/w/api.php`** (`type: api` for category lists, `type: mediawiki_page` for `action=parse` + wikitext). Wikitext parsing lives in `shared/mediawiki_wikitext.py`.
-- For **rewrite** LLM calls, `config.yaml` uses **`REWRITE_AGENT_PROXYAPI_*`** (ProxyAPI OpenRouter endpoint, default base `https://api.proxyapi.ru/openrouter/v1`, default model `qwen/qwen3-8b`). Copy `.env.example` and set at least **`REWRITE_AGENT_PROXYAPI_API_KEY`**. Other agents are unchanged; global **`OPENROUTER_*`** / **`PROXYAPI_*`** still work when `rewrite.llm` does not override them (see `shared/llm.py`).
-- Rewrite uses **`rewrite.runtime`** (429 backoff, optional `parallel_enabled` / `max_concurrency`, `inter_request_delay_s`, `debug_max_selected_rows`) and logs endpoint/model/`api_key_env` (never the key). **`openrouter/free`** remains rate-limited if you point `rewrite.llm` at it.
+- LLM calls use **ProxyAPI OpenRouter** in OpenAI-compatible `chat.completions` mode. Main envs are **`PROXYAPI_API_KEY`**, **`PROXYAPI_OPENROUTER_BASE_URL`** (default `https://api.proxyapi.ru/openrouter/v1`) and **`FREE_MODEL`** (default `openrouter/free`). You can also point `FREE_MODEL` to a specific free model such as `meta-llama/llama-3.3-70b-instruct:free`.
+- Model selection supports an explicit switch via **`PROXYAPI_MODEL_MODE`**:
+  - `free` — use `FREE_MODEL` and ignore legacy section-specific model envs
+  - `specific` — use `PROXYAPI_MODEL` (or legacy section-specific model envs) for a fixed model
+- Current recommended default is `PROXYAPI_MODEL_MODE=free`.
+- The client logs both the requested model and the actual model returned in `response.model`, because `openrouter/free` may route to different free backends.
+- Error handling distinguishes `429` rate limits, `402` balance / credits issues, and temporary `5xx` upstream failures. `429` and `5xx` are retried with exponential backoff; `402` raises an explicit error explaining that even free models may still require non-negative balance / credits on the OpenRouter side.
 
 ### Collection `sources` types
 

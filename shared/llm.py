@@ -53,17 +53,19 @@ except Exception:  # pragma: no cover
     OpenAI = None  # type: ignore
 
 
-# Defaults favor OpenRouter direct (free test route); PROXYAPI_* env / yaml still override via resolve().
-DEFAULT_OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
-DEFAULT_OPENROUTER_MODEL = "openrouter/free"
+# Defaults favor ProxyAPI OpenRouter free route.
+DEFAULT_PROXYAPI_OPENROUTER_BASE_URL = "https://api.proxyapi.ru/openrouter/v1"
+DEFAULT_FREE_MODEL = "openrouter/free"
+DEFAULT_OPENROUTER_BASE_URL = DEFAULT_PROXYAPI_OPENROUTER_BASE_URL
+DEFAULT_OPENROUTER_MODEL = DEFAULT_FREE_MODEL
 # Legacy names kept for callers/tests that import them
-DEFAULT_PROXYAPI_BASE_URL = DEFAULT_OPENROUTER_BASE_URL
-DEFAULT_PROXYAPI_MODEL = DEFAULT_OPENROUTER_MODEL
-# RewriteAgent → ProxyAPI OpenRouter (paid); defaults if env/yaml omit values
-DEFAULT_REWRITE_PROXYAPI_BASE_URL = "https://api.proxyapi.ru/openrouter/v1"
-DEFAULT_REWRITE_PROXYAPI_MODEL = "qwen/qwen3-8b"
-DEFAULT_DATA_COLLECTION_PROXYAPI_BASE_URL = "https://api.proxyapi.ru/openrouter/v1"
-DEFAULT_DATA_COLLECTION_PROXYAPI_MODEL = "qwen/qwen3-8b"
+DEFAULT_PROXYAPI_BASE_URL = DEFAULT_PROXYAPI_OPENROUTER_BASE_URL
+DEFAULT_PROXYAPI_MODEL = DEFAULT_FREE_MODEL
+DEFAULT_REWRITE_PROXYAPI_BASE_URL = DEFAULT_PROXYAPI_OPENROUTER_BASE_URL
+DEFAULT_REWRITE_PROXYAPI_MODEL = DEFAULT_FREE_MODEL
+DEFAULT_DATA_COLLECTION_PROXYAPI_BASE_URL = DEFAULT_PROXYAPI_OPENROUTER_BASE_URL
+DEFAULT_DATA_COLLECTION_PROXYAPI_MODEL = DEFAULT_FREE_MODEL
+DEFAULT_PROXYAPI_MODEL_MODE = "free"
 
 
 def _first_nonempty_str(*candidates: object) -> str | None:
@@ -77,10 +79,64 @@ def _first_nonempty_str(*candidates: object) -> str | None:
 
 
 def _default_api_key_env_name() -> str:
-    """Prefer OPENROUTER_API_KEY when set; else PROXYAPI (backward compatible)."""
-    if os.getenv("OPENROUTER_API_KEY", "").strip():
-        return "OPENROUTER_API_KEY"
+    """Prefer ProxyAPI key for OpenRouter requests."""
     return "PROXYAPI_API_KEY"
+
+
+def _proxyapi_model_mode() -> str:
+    raw = str(os.getenv("PROXYAPI_MODEL_MODE", DEFAULT_PROXYAPI_MODEL_MODE) or "").strip().lower()
+    return raw if raw in {"free", "specific"} else DEFAULT_PROXYAPI_MODEL_MODE
+
+
+def _is_free_model_name(model: object) -> bool:
+    if not isinstance(model, str):
+        return False
+    m = model.strip().lower()
+    return bool(m == "openrouter/free" or m.endswith("/free") or m.endswith(":free"))
+
+
+def _status_code_from_exc(exc: BaseException) -> int | None:
+    code = getattr(exc, "status_code", None)
+    if isinstance(code, int):
+        return code
+    response = getattr(exc, "response", None)
+    if response is not None:
+        code = getattr(response, "status_code", None)
+        if isinstance(code, int):
+            return code
+    body = getattr(exc, "body", None)
+    if isinstance(body, dict):
+        body_status = body.get("status_code") or body.get("status")
+        if isinstance(body_status, int):
+            return body_status
+    return None
+
+
+def _balance_error_message(status_code: int | None) -> str:
+    suffix = f" (HTTP {status_code})" if status_code is not None else ""
+    return (
+        "LLM balance/credits issue"
+        f"{suffix}: even free models may require non-negative balance / credits on OpenRouter side."
+    )
+
+
+def _error_text(exc: BaseException) -> str:
+    body = getattr(exc, "body", None)
+    if isinstance(body, dict):
+        err = body.get("error")
+        if isinstance(err, dict):
+            msg = err.get("message")
+            if isinstance(msg, str) and msg.strip():
+                return msg.strip()
+        msg = body.get("message")
+        if isinstance(msg, str) and msg.strip():
+            return msg.strip()
+    response = getattr(exc, "response", None)
+    if response is not None:
+        text = getattr(response, "text", None)
+        if isinstance(text, str) and text.strip():
+            return text.strip()[:500]
+    return str(exc).strip()
 
 
 def _is_rate_limit_error(exc: BaseException) -> bool:
@@ -102,9 +158,9 @@ def _is_rate_limit_error(exc: BaseException) -> bool:
 @dataclass
 class ResolvedLLMConfig:
     profile_name: str = "default"
-    api_key_env: str = "OPENROUTER_API_KEY"
-    base_url: str = DEFAULT_OPENROUTER_BASE_URL
-    model: str = DEFAULT_OPENROUTER_MODEL
+    api_key_env: str = "PROXYAPI_API_KEY"
+    base_url: str = DEFAULT_PROXYAPI_OPENROUTER_BASE_URL
+    model: str = DEFAULT_FREE_MODEL
     timeout_s: float = 120.0
     max_retries: int = 3
     retry_sleep: float = 2.0
@@ -120,20 +176,10 @@ class ResolvedLLMConfig:
         primary = os.getenv(self.api_key_env, "").strip()
         if primary:
             return primary
-        # Dedicated env names: do not cross-fallback to generic PROXYAPI / OPENROUTER keys.
-        if self.api_key_env in (
-            "OPENROUTER_API_KEY",
-            "REWRITE_AGENT_PROXYAPI_API_KEY",
-            "DATA_COLLECTION_PROXYAPI_API_KEY",
-        ):
+        if self.api_key_env in ("PROXYAPI_API_KEY", "REWRITE_AGENT_PROXYAPI_API_KEY", "DATA_COLLECTION_PROXYAPI_API_KEY"):
             return ""
-        # Soft migration: allow the other common key if the configured env is empty
         if self.api_key_env != "PROXYAPI_API_KEY":
             fb = os.getenv("PROXYAPI_API_KEY", "").strip()
-            if fb:
-                return fb
-        if self.api_key_env != "OPENROUTER_API_KEY":
-            fb = os.getenv("OPENROUTER_API_KEY", "").strip()
             if fb:
                 return fb
         return ""
@@ -181,6 +227,12 @@ class ProxyAPIModelClient:
                 )
             except Exception:
                 self._sdk_client = None
+
+    def _retry_delay(self, base: float, attempt: int) -> float:
+        return max(0.1, float(base) * (2 ** max(0, attempt - 1)))
+
+    def _log_actual_model(self, requested_model: object, actual_model: object) -> None:
+        _log.info("LLM response model requested=%s actual=%s", requested_model, actual_model)
 
     def chat(
         self,
@@ -250,6 +302,7 @@ class ProxyAPIModelClient:
     def _chat_via_sdk(self, payload: dict[str, Any], *, timeout_s: float) -> str:  # pragma: no cover
         last_exc: Optional[Exception] = None
         n_429 = 0
+        n_5xx = 0
         n_other = 0
         max_rounds = self.max_429_retries + self.max_retries + 5
         for _round in range(max_rounds):
@@ -267,29 +320,52 @@ class ProxyAPIModelClient:
                     "H-A",
                     "_chat_via_sdk:after_create",
                     "sdk ok",
-                    {"round": _round, "elapsed_ms": round((time.monotonic() - _t0) * 1000, 2)},
+                    {
+                        "round": _round,
+                        "elapsed_ms": round((time.monotonic() - _t0) * 1000, 2),
+                        "actual_model": getattr(resp, "model", None),
+                    },
                 )
                 # endregion
+                self._log_actual_model(payload.get("model"), getattr(resp, "model", None))
                 return (resp.choices[0].message.content or "").strip()
             except Exception as exc:
                 last_exc = exc
-                if _is_rate_limit_error(exc):
+                status_code = _status_code_from_exc(exc)
+                if status_code == 402:
+                    raise RuntimeError(_balance_error_message(status_code)) from exc
+                if status_code == 429 or _is_rate_limit_error(exc):
                     if n_429 >= self.max_429_retries:
                         break
                     n_429 += 1
+                    delay = self._retry_delay(self.backoff_on_429_s, n_429)
                     _log.warning(
                         "LLM 429 rate limit; sleeping %.1fs (%s/%s)",
-                        self.backoff_on_429_s,
+                        delay,
                         n_429,
                         self.max_429_retries,
                     )
-                    time.sleep(self.backoff_on_429_s)
+                    time.sleep(delay)
+                    continue
+                if status_code is not None and 500 <= status_code < 600:
+                    if n_5xx >= self.max_retries:
+                        break
+                    n_5xx += 1
+                    delay = self._retry_delay(self.retry_sleep, n_5xx)
+                    _log.warning(
+                        "LLM upstream/proxy failure HTTP %s; sleeping %.1fs (%s/%s)",
+                        status_code,
+                        delay,
+                        n_5xx,
+                        self.max_retries,
+                    )
+                    time.sleep(delay)
                     continue
                 n_other += 1
                 if n_other >= self.max_retries:
                     break
-                time.sleep(self.retry_sleep * n_other)
-        raise RuntimeError(f"LLM request failed after retries: {last_exc}")
+                time.sleep(self._retry_delay(self.retry_sleep, n_other))
+        raise RuntimeError(f"LLM request failed after retries: {_error_text(last_exc) if last_exc else 'unknown error'}")
 
     def _chat_via_requests(self, payload: dict[str, Any], *, timeout_s: float) -> str:
         url = f"{self.base_url}/chat/completions"
@@ -301,6 +377,7 @@ class ProxyAPIModelClient:
 
         last_exc: Optional[Exception] = None
         n_429 = 0
+        n_5xx = 0
         n_other = 0
         max_rounds = self.max_429_retries + self.max_retries + 5
         for _round in range(max_rounds):
@@ -322,59 +399,114 @@ class ProxyAPIModelClient:
                     },
                 )
                 # endregion
+                if resp.status_code == 402:
+                    raise RuntimeError(_balance_error_message(resp.status_code))
                 if resp.status_code == 429:
                     if n_429 >= self.max_429_retries:
                         last_exc = RuntimeError(f"HTTP 429: {resp.text[:500]}")
                         break
                     n_429 += 1
+                    delay = self._retry_delay(self.backoff_on_429_s, n_429)
                     _log.warning(
                         "LLM 429 rate limit; sleeping %.1fs (%s/%s)",
-                        self.backoff_on_429_s,
+                        delay,
                         n_429,
                         self.max_429_retries,
                     )
-                    time.sleep(self.backoff_on_429_s)
+                    time.sleep(delay)
+                    continue
+                if 500 <= resp.status_code < 600:
+                    if n_5xx >= self.max_retries:
+                        last_exc = RuntimeError(f"HTTP {resp.status_code}: {resp.text[:500]}")
+                        break
+                    n_5xx += 1
+                    delay = self._retry_delay(self.retry_sleep, n_5xx)
+                    _log.warning(
+                        "LLM upstream/proxy failure HTTP %s; sleeping %.1fs (%s/%s)",
+                        resp.status_code,
+                        delay,
+                        n_5xx,
+                        self.max_retries,
+                    )
+                    time.sleep(delay)
                     continue
                 resp.raise_for_status()
                 data = resp.json()
+                self._log_actual_model(payload.get("model"), data.get("model"))
                 return (data["choices"][0]["message"]["content"] or "").strip()
             except requests.HTTPError as exc:
                 last_exc = exc
-                if exc.response is not None and exc.response.status_code == 429:
+                status_code = exc.response.status_code if exc.response is not None else None
+                if status_code == 402:
+                    raise RuntimeError(_balance_error_message(status_code)) from exc
+                if status_code == 429:
                     if n_429 >= self.max_429_retries:
                         break
                     n_429 += 1
+                    delay = self._retry_delay(self.backoff_on_429_s, n_429)
                     _log.warning(
                         "LLM 429 rate limit; sleeping %.1fs (%s/%s)",
-                        self.backoff_on_429_s,
+                        delay,
                         n_429,
                         self.max_429_retries,
                     )
-                    time.sleep(self.backoff_on_429_s)
+                    time.sleep(delay)
+                    continue
+                if status_code is not None and 500 <= status_code < 600:
+                    if n_5xx >= self.max_retries:
+                        break
+                    n_5xx += 1
+                    delay = self._retry_delay(self.retry_sleep, n_5xx)
+                    _log.warning(
+                        "LLM upstream/proxy failure HTTP %s; sleeping %.1fs (%s/%s)",
+                        status_code,
+                        delay,
+                        n_5xx,
+                        self.max_retries,
+                    )
+                    time.sleep(delay)
                     continue
                 n_other += 1
                 if n_other >= self.max_retries:
                     break
-                time.sleep(self.retry_sleep * n_other)
+                time.sleep(self._retry_delay(self.retry_sleep, n_other))
             except Exception as exc:
                 last_exc = exc
-                if _is_rate_limit_error(exc):
+                status_code = _status_code_from_exc(exc)
+                if status_code == 402:
+                    raise RuntimeError(_balance_error_message(status_code)) from exc
+                if status_code == 429 or _is_rate_limit_error(exc):
                     if n_429 >= self.max_429_retries:
                         break
                     n_429 += 1
+                    delay = self._retry_delay(self.backoff_on_429_s, n_429)
                     _log.warning(
                         "LLM 429 rate limit; sleeping %.1fs (%s/%s)",
-                        self.backoff_on_429_s,
+                        delay,
                         n_429,
                         self.max_429_retries,
                     )
-                    time.sleep(self.backoff_on_429_s)
+                    time.sleep(delay)
+                    continue
+                if status_code is not None and 500 <= status_code < 600:
+                    if n_5xx >= self.max_retries:
+                        break
+                    n_5xx += 1
+                    delay = self._retry_delay(self.retry_sleep, n_5xx)
+                    _log.warning(
+                        "LLM upstream/proxy failure HTTP %s; sleeping %.1fs (%s/%s)",
+                        status_code,
+                        delay,
+                        n_5xx,
+                        self.max_retries,
+                    )
+                    time.sleep(delay)
                     continue
                 n_other += 1
                 if n_other >= self.max_retries:
                     break
-                time.sleep(self.retry_sleep * n_other)
-        raise RuntimeError(f"LLM request failed after retries: {last_exc}")
+                time.sleep(self._retry_delay(self.retry_sleep, n_other))
+        raise RuntimeError(f"LLM request failed after retries: {_error_text(last_exc) if last_exc else 'unknown error'}")
 
 
 class LLMClientRegistry:
@@ -420,6 +552,7 @@ class LLMClientRegistry:
 
         base_url = _first_nonempty_str(
             merged.get("base_url"),
+            os.getenv("PROXYAPI_OPENROUTER_BASE_URL"),
             os.getenv("DATA_COLLECTION_PROXYAPI_BASE_URL") if agent_section == "collection" else None,
             os.getenv("REWRITE_AGENT_PROXYAPI_BASE_URL") if agent_section == "rewrite" else None,
             os.getenv("OPENROUTER_BASE_URL"),
@@ -433,36 +566,36 @@ class LLMClientRegistry:
             else:
                 base_url = DEFAULT_OPENROUTER_BASE_URL
 
-        # On OpenRouter direct host (openrouter.ai), do not fall back to PROXYAPI_MODEL.
-        model_candidates: list[object] = [
-            merged.get("model"),
-            os.getenv("DATA_COLLECTION_PROXYAPI_MODEL") if agent_section == "collection" else None,
-            os.getenv("REWRITE_AGENT_PROXYAPI_MODEL") if agent_section == "rewrite" else None,
-            os.getenv("OPENROUTER_MODEL"),
-        ]
-        if "openrouter.ai" not in (base_url or ""):
-            model_candidates.append(os.getenv("PROXYAPI_MODEL"))
+        model_mode = _proxyapi_model_mode()
+        if model_mode == "free":
+            model_candidates: list[object] = [
+                os.getenv("FREE_MODEL"),
+                merged.get("model") if _is_free_model_name(merged.get("model")) else None,
+                os.getenv("OPENROUTER_MODEL") if _is_free_model_name(os.getenv("OPENROUTER_MODEL")) else None,
+            ]
+        else:
+            model_candidates = [
+                os.getenv("PROXYAPI_MODEL"),
+                merged.get("model"),
+                os.getenv("DATA_COLLECTION_PROXYAPI_MODEL") if agent_section == "collection" else None,
+                os.getenv("REWRITE_AGENT_PROXYAPI_MODEL") if agent_section == "rewrite" else None,
+                os.getenv("OPENROUTER_MODEL"),
+            ]
         model = _first_nonempty_str(*model_candidates)
         if not model:
-            if agent_section == "rewrite" and "proxyapi.ru" in (base_url or ""):
+            if model_mode == "free":
+                model = DEFAULT_FREE_MODEL
+            elif agent_section == "rewrite" and "proxyapi.ru" in (base_url or ""):
                 model = DEFAULT_REWRITE_PROXYAPI_MODEL
             elif agent_section == "collection" and "proxyapi.ru" in (base_url or ""):
                 model = DEFAULT_DATA_COLLECTION_PROXYAPI_MODEL
             else:
-                model = DEFAULT_OPENROUTER_MODEL
+                model = DEFAULT_FREE_MODEL
 
         api_key_env = _first_nonempty_str(
             merged.get("api_key_env"),
             os.getenv("PROXYAPI_API_KEY_ENV"),
-        ) or (
-            "DATA_COLLECTION_PROXYAPI_API_KEY"
-            if agent_section == "collection"
-            else (
-                "REWRITE_AGENT_PROXYAPI_API_KEY"
-                if agent_section == "rewrite"
-                else _default_api_key_env_name()
-            )
-        )
+        ) or _default_api_key_env_name()
 
         backoff_429 = merged.get("backoff_on_429_s")
         if backoff_429 is None:
@@ -550,10 +683,10 @@ class LLMEnabledMixin:
                 "LLM collection: API key missing for api_key_env=%s (code EDA still works; set key for LLM summary).",
                 resolved.api_key_env,
             )
-        elif not resolved.available and resolved.api_key_env == "OPENROUTER_API_KEY":
+        elif not resolved.available and resolved.api_key_env == "PROXYAPI_API_KEY":
             _log.warning(
-                "LLM: OPENROUTER_API_KEY is missing or empty; not falling back to PROXYAPI_API_KEY. "
-                "Set OPENROUTER_API_KEY in .env for rewrite.llm (see .env.example)."
+                "LLM: PROXYAPI_API_KEY is missing or empty. "
+                "Set PROXYAPI_API_KEY in .env for ProxyAPI OpenRouter free models (see .env.example)."
             )
 
         if resolved.available and agent_section == "rewrite":
@@ -582,9 +715,7 @@ class LLMEnabledMixin:
                 resolved.model,
                 resolved.api_key_env,
             )
-        elif resolved.available and (
-            resolved.model.strip() == "openrouter/free" or resolved.model.endswith("/openrouter/free")
-        ):
+        elif resolved.available and _is_free_model_name(resolved.model):
             _log.warning(
                 "OpenRouter free route detected; using low-throughput safe mode (model=%s base_url=%s)",
                 resolved.model,

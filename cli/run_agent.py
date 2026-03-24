@@ -43,6 +43,13 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--input", default=None, help="Input table (.parquet or .csv)")
     p.add_argument("--output", default=None, help="Output path (default depends on agent)")
     p.add_argument(
+        "--review-console",
+        action="store_true",
+        help="Run console review loop for annotation review queue instead of auto-labeling",
+    )
+    p.add_argument("--reviewer", default=None, help="Reviewer name for console review mode")
+    p.add_argument("--limit", type=int, default=None, help="Optional limit for console review mode")
+    p.add_argument(
         "--log-level",
         default="INFO",
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
@@ -91,13 +98,25 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if name == "annotation":
+        ann = AnnotationAgent(modality="text", config=cfg_path if cfg_path.exists() else cfg)
+        hitl = cfg.get("hitl") or {}
+        if args.review_console:
+            inp = Path(args.input or hitl.get("review_queue_path", ROOT / "data/labeled/review_queue.jsonl"))
+            out = Path(args.output or hitl.get("corrected_queue_path", ROOT / "data/labeled/review_results.jsonl"))
+            _log.info("agent=annotation review_console input=%s output=%s", inp, out)
+            ann.review_in_console(
+                inp,
+                path_out=out,
+                limit=args.limit,
+                reviewer=args.reviewer,
+            )
+            _log.info("agent=annotation review_console finished output=%s", out)
+            return 0
         inp = Path(args.input or ROOT / "data/interim/clean.parquet")
         out = args.output
         _log.info("agent=annotation input=%s", inp)
-        ann = AnnotationAgent(modality="text", config=cfg_path if cfg_path.exists() else cfg)
         ann.run(inp, output_parquet=out)
-        hitl = cfg.get("hitl") or {}
-        rq_path = Path(hitl.get("review_queue_path", ROOT / "data/labeled/review_queue.csv"))
+        rq_path = Path(hitl.get("review_queue_path", ROOT / "data/labeled/review_queue.jsonl"))
         rq_rows = len(read_table(rq_path)) if rq_path.exists() else 0
         _log.info(
             "agent=annotation finished auto_labeled=%s review_queue=%s review_queue_rows=%s",
@@ -113,7 +132,9 @@ def main(argv: list[str] | None = None) -> int:
         df = read_table(inp)
         agent = ActiveLearningAgent(config=cfg_path if cfg_path.exists() else cfg)
         if "final_label" in df.columns:
-            df = df.rename(columns={"final_label": "label"})
+            # Prefer reviewed final labels and avoid duplicate "label" columns.
+            df = df.copy()
+            df["label"] = df["final_label"]
         from sklearn.model_selection import train_test_split
 
         al_cfg = cfg.get("active_learning") or {}

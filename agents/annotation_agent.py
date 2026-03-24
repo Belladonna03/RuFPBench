@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -11,9 +12,35 @@ from sklearn.metrics import cohen_kappa_score
 from shared.config import as_config_dict
 from shared.logging_utils import get_logger
 from shared.paths import ProjectPaths
-from shared.utils import loads_meta
+from shared.utils import loads_meta, make_uid, utc_now_iso
 
 _log = get_logger("agents.annotation")
+
+REVIEW_STATE_COLUMNS = [
+    "human_label",
+    "final_label",
+    "review_status",
+    "reviewer",
+    "review_note",
+    "review_timestamp",
+]
+REVIEW_QUEUE_COLUMNS = [
+    "sample_id",
+    "uid",
+    "text",
+    "pred_label",
+    "pred_confidence",
+    "review_reason",
+    "human_label",
+    "final_label",
+    "review_status",
+    "reviewer",
+    "review_note",
+    "review_timestamp",
+    "label_reason",
+    "label_signals",
+]
+DECIDED_REVIEW_STATUSES = {"accepted_auto", "corrected", "skipped"}
 
 
 class AnnotationAgent:
@@ -32,7 +59,7 @@ class AnnotationAgent:
             self.annotation_cfg = config.get("annotation") or {}
             self.hitl_cfg = config.get("hitl") or {}
             root = Path(__file__).resolve().parents[1]
-            self.paths = ProjectPaths.from_config(root, {})
+            self.paths = ProjectPaths.from_config(root, config)
         else:
             self.cfg = {}
             self.annotation_cfg = {}
@@ -72,6 +99,175 @@ class AnnotationAgent:
             if col in df.columns:
                 return col
         return None
+
+    def _default_review_queue_path(self) -> Path:
+        return Path(self.hitl_cfg.get("review_queue_path", self.paths.labeled_dir / "review_queue.jsonl"))
+
+    def _default_review_results_path(self) -> Path:
+        return Path(self.hitl_cfg.get("corrected_queue_path", self.paths.labeled_dir / "review_results.jsonl"))
+
+    def _sample_id_for_row(self, row: pd.Series | dict[str, Any], idx: int | None = None) -> str:
+        uid = str((row.get("uid") if isinstance(row, dict) else row.get("uid")) or "").strip()
+        if uid:
+            return uid
+        text = str((row.get("text") if isinstance(row, dict) else row.get("text")) or "").strip()
+        source = str((row.get("source") if isinstance(row, dict) else row.get("source")) or "").strip()
+        idx_part = str(idx if idx is not None else (row.get("sample_id") if isinstance(row, dict) else row.get("sample_id")) or "")
+        return make_uid("review-sample", idx_part, source, text)
+
+    def _review_reason_list(self, value: Any) -> list[str]:
+        if isinstance(value, list):
+            return [str(x).strip() for x in value if str(x).strip()]
+        if value is None:
+            return []
+        text = str(value).strip()
+        if not text:
+            return []
+        return [part.strip() for part in text.split(";") if part.strip()]
+
+    def _normalize_review_df(self, df: pd.DataFrame) -> pd.DataFrame:
+        out = df.copy()
+        if "sample_id" not in out.columns:
+            out["sample_id"] = [
+                self._sample_id_for_row(row, idx)
+                for idx, (_, row) in enumerate(out.iterrows())
+            ]
+        if "uid" not in out.columns:
+            out["uid"] = out["sample_id"]
+        if "pred_label" not in out.columns:
+            if "predicted_label" in out.columns:
+                out["pred_label"] = out["predicted_label"]
+            elif "label" in out.columns:
+                out["pred_label"] = out["label"]
+            else:
+                out["pred_label"] = None
+        if "pred_confidence" not in out.columns:
+            if "confidence" in out.columns:
+                out["pred_confidence"] = out["confidence"]
+            else:
+                out["pred_confidence"] = None
+        if "review_reason" in out.columns:
+            out["review_reason"] = out["review_reason"].apply(self._review_reason_list)
+        else:
+            out["review_reason"] = [[] for _ in range(len(out))]
+        for col in REVIEW_STATE_COLUMNS:
+            if col not in out.columns:
+                out[col] = None
+        if "review_status" not in out.columns:
+            out["review_status"] = "pending"
+        out["review_status"] = out["review_status"].fillna("pending").astype(str)
+        if "text" not in out.columns:
+            out["text"] = ""
+        if "label_reason" not in out.columns:
+            out["label_reason"] = ""
+        if "label_signals" not in out.columns:
+            out["label_signals"] = ""
+        cols = [c for c in REVIEW_QUEUE_COLUMNS if c in out.columns]
+        extra = [c for c in out.columns if c not in cols]
+        return out[cols + extra]
+
+    def _read_review_table(self, path: str | Path) -> pd.DataFrame:
+        p = Path(path)
+        if not p.exists():
+            return self._normalize_review_df(pd.DataFrame(columns=REVIEW_QUEUE_COLUMNS))
+        if p.suffix.lower() == ".jsonl":
+            rows: list[dict[str, Any]] = []
+            with p.open("r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    rows.append(json.loads(line))
+            return self._normalize_review_df(pd.DataFrame(rows))
+        if p.suffix.lower() in {".csv", ".txt"}:
+            return self._normalize_review_df(pd.read_csv(p))
+        raise ValueError(f"Unsupported review file format: {p.suffix}")
+
+    def _write_review_table(self, df: pd.DataFrame, path: str | Path) -> None:
+        p = Path(path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        out = self._normalize_review_df(df)
+        if p.suffix.lower() == ".jsonl":
+            with p.open("w", encoding="utf-8") as f:
+                for row in out.to_dict(orient="records"):
+                    row = dict(row)
+                    row["review_reason"] = self._review_reason_list(row.get("review_reason"))
+                    f.write(json.dumps(row, ensure_ascii=False) + "\n")
+            return
+        if p.suffix.lower() in {".csv", ".txt"}:
+            csv_df = out.copy()
+            csv_df["review_reason"] = csv_df["review_reason"].apply(
+                lambda reasons: ";".join(self._review_reason_list(reasons))
+            )
+            csv_df.to_csv(p, index=False)
+            return
+        raise ValueError(f"Unsupported review file format: {p.suffix}")
+
+    def _merge_existing_review_state(self, df_review: pd.DataFrame, path: str | Path) -> pd.DataFrame:
+        p = Path(path)
+        review = self._normalize_review_df(df_review)
+        if not p.exists():
+            return review
+        existing = self._read_review_table(p)
+        if existing.empty:
+            return review
+        existing = existing.drop_duplicates(subset=["sample_id"], keep="last").set_index("sample_id")
+        for idx, row in review.iterrows():
+            sid = str(row.get("sample_id", ""))
+            if not sid or sid not in existing.index:
+                continue
+            prev = existing.loc[sid]
+            for col in REVIEW_STATE_COLUMNS:
+                prev_val = prev.get(col)
+                if prev_val is None:
+                    continue
+                if isinstance(prev_val, float) and pd.isna(prev_val):
+                    continue
+                if str(prev_val).strip():
+                    review.at[idx, col] = prev_val
+            if prev.get("review_status") in DECIDED_REVIEW_STATUSES:
+                review.at[idx, "review_status"] = prev.get("review_status")
+        return review
+
+    def _labelstudio_tasks(self, df: pd.DataFrame) -> list[dict[str, Any]]:
+        tasks = []
+        for i, row in df.iterrows():
+            predicted = str(
+                row.get("predicted_label", row.get("pred_label", row.get("label", ""))) or ""
+            )
+            confidence = row.get("confidence", row.get("pred_confidence", 0.0))
+            result = []
+            if predicted:
+                result.append(
+                    {
+                        "id": f"pred-{i}",
+                        "from_name": "label",
+                        "to_name": "text",
+                        "type": "choices",
+                        "value": {"choices": [predicted]},
+                    }
+                )
+            tasks.append(
+                {
+                    "data": {
+                        "text": str(row.get("text", "")),
+                        "uid": str(row.get("uid", row.get("sample_id", ""))),
+                        "sample_id": str(row.get("sample_id", row.get("uid", ""))),
+                        "predicted_label": predicted,
+                        "confidence": float(confidence or 0.0),
+                        "label_reason": str(row.get("label_reason", "") or ""),
+                        "review_reason": self._review_reason_list(row.get("review_reason")),
+                    },
+                    "predictions": [
+                        {
+                            "model_version": "annotation_agent",
+                            "score": float(confidence or 0.0),
+                            "result": result,
+                        }
+                    ],
+                }
+            )
+        return tasks
 
     def _predict_text_row(self, row: pd.Series) -> tuple[str, float, str, str]:
         labels = self._labels()
@@ -236,6 +432,74 @@ class AnnotationAgent:
             out["label"] = out["predicted_label"]
         return out
 
+    def flag_for_review(
+        self,
+        df_labeled: pd.DataFrame,
+        confidence_threshold: float = 0.75,
+        max_items: int | None = None,
+        review_reasons: list[str] | None = None,
+    ) -> pd.DataFrame:
+        """Return only the subset that should go to manual review, with stable review schema."""
+        labels = set(self._labels())
+        allowed = {str(x).strip() for x in review_reasons or [] if str(x).strip()}
+        rows: list[dict[str, Any]] = []
+        for idx, row in df_labeled.iterrows():
+            text = str(row.get("text", "") or "").strip()
+            pred_label = str(row.get("predicted_label", "") or "").strip()
+            conf_raw = row.get("confidence")
+            try:
+                pred_conf = float(conf_raw)
+            except (TypeError, ValueError):
+                pred_conf = None
+            signals = str(row.get("label_signals", "") or "")
+            reasons: list[str] = []
+            if pred_conf is not None and pred_conf < confidence_threshold:
+                reasons.append("low_confidence")
+            if not pred_label:
+                reasons.append("missing_label")
+            elif pred_label not in labels:
+                reasons.append("invalid_prediction")
+            if "short_ambiguous_text" in signals or "ambiguous" in str(row.get("label_reason", "")).lower():
+                reasons.append("ambiguous_text")
+            if len(text) > 600 or len(text.split()) > 120:
+                reasons.append("long_text")
+            if allowed:
+                reasons = [reason for reason in reasons if reason in allowed]
+            if not reasons:
+                continue
+            rows.append(
+                {
+                    "sample_id": self._sample_id_for_row(row, idx),
+                    "uid": str(row.get("uid", "") or "") or self._sample_id_for_row(row, idx),
+                    "text": text,
+                    "pred_label": pred_label or None,
+                    "pred_confidence": pred_conf,
+                    "review_reason": reasons,
+                    "human_label": None,
+                    "final_label": None,
+                    "review_status": "pending",
+                    "reviewer": None,
+                    "review_note": None,
+                    "review_timestamp": None,
+                    "label_reason": str(row.get("label_reason", "") or ""),
+                    "label_signals": signals,
+                }
+            )
+        review_df = self._normalize_review_df(pd.DataFrame(rows))
+        if review_df.empty:
+            return review_df
+        review_df["_priority_conf"] = review_df["pred_confidence"].apply(
+            lambda v: float(v) if v is not None and not pd.isna(v) else -1.0
+        )
+        review_df["_priority_reason_count"] = review_df["review_reason"].apply(len)
+        review_df = review_df.sort_values(
+            by=["_priority_conf", "_priority_reason_count", "sample_id"],
+            ascending=[True, False, True],
+        ).drop(columns=["_priority_conf", "_priority_reason_count"])
+        if max_items is not None:
+            review_df = review_df.head(int(max_items))
+        return review_df.reset_index(drop=True)
+
     def generate_spec(self, df: pd.DataFrame, task: str | None = None) -> Path:
         task = task or self.annotation_cfg.get("task", "ru_fpbench_borderline_prompt_classification")
         self.paths.reports_dir.mkdir(parents=True, exist_ok=True)
@@ -339,55 +603,189 @@ class AnnotationAgent:
             metrics["agreement"] = None
             metrics["kappa"] = None
 
+        if "review_status" in df.columns:
+            statuses = df["review_status"].fillna("pending").astype(str)
+            decided = statuses.isin(DECIDED_REVIEW_STATUSES)
+            metrics["review_rate"] = float(decided.mean()) if len(df) else 0.0
+            decided_n = int(decided.sum())
+            if decided_n:
+                metrics["auto_accept_rate"] = float((statuses == "accepted_auto").sum() / decided_n)
+                metrics["correction_rate"] = float((statuses == "corrected").sum() / decided_n)
+            else:
+                metrics["auto_accept_rate"] = 0.0
+                metrics["correction_rate"] = 0.0
+        else:
+            metrics["review_rate"] = 0.0
+            metrics["auto_accept_rate"] = 0.0
+            metrics["correction_rate"] = 0.0
+
         return metrics
 
     def export_to_labelstudio(self, df: pd.DataFrame) -> Path:
         self.paths.labeled_dir.mkdir(parents=True, exist_ok=True)
         path = self.paths.labeled_dir / "labelstudio_import.json"
-        tasks = []
-        for i, row in df.iterrows():
-            predicted = str(row.get("predicted_label", "") or "")
-            result = []
-            if predicted:
-                result.append(
-                    {
-                        "id": f"pred-{i}",
-                        "from_name": "label",
-                        "to_name": "text",
-                        "type": "choices",
-                        "value": {"choices": [predicted]},
-                    }
-                )
-            tasks.append(
-                {
-                    "data": {
-                        "text": str(row.get("text", "")),
-                        "uid": str(row.get("uid", "")),
-                        "predicted_label": predicted,
-                        "confidence": float(row.get("confidence", 0.0) or 0.0),
-                        "label_reason": str(row.get("label_reason", "") or ""),
-                    },
-                    "predictions": [
-                        {
-                            "model_version": "annotation_agent",
-                            "score": float(row.get("confidence", 0.0) or 0.0),
-                            "result": result,
-                        }
-                    ],
-                }
-            )
-        path.write_text(json.dumps(tasks, ensure_ascii=False, indent=2), encoding="utf-8")
+        path.write_text(json.dumps(self._labelstudio_tasks(df), ensure_ascii=False, indent=2), encoding="utf-8")
         return path
 
+    def export_review_queue(self, df_review: pd.DataFrame, path: str | Path) -> None:
+        """Write review queue as JSONL or CSV, preserving existing review progress when present."""
+        merged = self._merge_existing_review_state(df_review, path)
+        self._write_review_table(merged, path)
+
+    def review_in_console(
+        self,
+        path_in: str | Path,
+        path_out: str | Path | None = None,
+        labels: list[str] | None = None,
+        autosave: bool = True,
+        limit: int | None = None,
+        reviewer: str | None = None,
+    ) -> None:
+        """Review queued samples interactively in the console.
+
+        If `review_status` is `skipped`, `merge_review_decisions()` leaves `final_label`
+        equal to the auto prediction and marks the sample as unresolved by keeping
+        `reviewed=False`.
+        """
+        in_path = Path(path_in)
+        out_path = Path(path_out) if path_out else self._default_review_results_path()
+        review_df = self._read_review_table(in_path)
+        review_df = self._merge_existing_review_state(review_df, out_path)
+        labels = labels or self._labels()
+        reviewer_name = reviewer or os.getenv("USER") or os.getenv("USERNAME") or None
+        pending_mask = ~review_df["review_status"].astype(str).isin(DECIDED_REVIEW_STATUSES)
+        pending = review_df[pending_mask].copy()
+        if limit is not None:
+            pending = pending.head(int(limit))
+        if pending.empty:
+            _log.info("console review: no pending records in %s", in_path)
+            self._write_review_table(review_df, out_path)
+            return
+        sample_ids = pending["sample_id"].astype(str).tolist()
+        total = len(sample_ids)
+        for pos, sample_id in enumerate(sample_ids, start=1):
+            row_idx = review_df.index[review_df["sample_id"].astype(str) == sample_id]
+            if len(row_idx) == 0:
+                continue
+            idx = row_idx[0]
+            while True:
+                row = review_df.loc[idx]
+                print("=" * 80)
+                print(f"Sample {pos} / {total}")
+                print(f"sample_id: {row.get('sample_id')}")
+                print(f"text: {row.get('text')}")
+                print(f"predicted: {row.get('pred_label')}")
+                print(f"confidence: {row.get('pred_confidence')}")
+                print(f"reason: {', '.join(self._review_reason_list(row.get('review_reason')))}")
+                if str(row.get("review_note") or "").strip():
+                    print(f"note: {row.get('review_note')}")
+                print("actions: [a] accept, [1..N] relabel, [s] skip, [n] note, [q] quit")
+                for label_idx, label in enumerate(labels, start=1):
+                    print(f"  {label_idx}. {label}")
+                action = input("> ").strip()
+                if not action:
+                    continue
+                low = action.lower()
+                if low == "q":
+                    self._write_review_table(review_df, out_path)
+                    return
+                if low == "n":
+                    note = input("note> ").strip()
+                    review_df.at[idx, "review_note"] = note or None
+                    if autosave:
+                        self._write_review_table(review_df, out_path)
+                    continue
+                if low == "a":
+                    review_df.at[idx, "human_label"] = row.get("pred_label")
+                    review_df.at[idx, "final_label"] = row.get("pred_label")
+                    review_df.at[idx, "review_status"] = "accepted_auto"
+                elif low == "s":
+                    review_df.at[idx, "human_label"] = None
+                    review_df.at[idx, "final_label"] = row.get("pred_label")
+                    review_df.at[idx, "review_status"] = "skipped"
+                else:
+                    chosen_label = None
+                    if action.isdigit():
+                        label_idx = int(action) - 1
+                        if 0 <= label_idx < len(labels):
+                            chosen_label = labels[label_idx]
+                    elif action in labels:
+                        chosen_label = action
+                    if chosen_label is None:
+                        print("Unknown action. Try again.")
+                        continue
+                    review_df.at[idx, "human_label"] = chosen_label
+                    review_df.at[idx, "final_label"] = chosen_label
+                    review_df.at[idx, "review_status"] = "corrected"
+                review_df.at[idx, "reviewer"] = reviewer_name
+                review_df.at[idx, "review_timestamp"] = utc_now_iso()
+                if autosave:
+                    self._write_review_table(review_df, out_path)
+                break
+        self._write_review_table(review_df, out_path)
+
+    def merge_review_decisions(self, df_labeled: pd.DataFrame, decisions_path: str | Path) -> pd.DataFrame:
+        """Merge human review decisions into labeled data.
+
+        `accepted_auto` keeps the model prediction as `final_label`.
+        `corrected` overrides it with `human_label`.
+        `skipped` also keeps the model prediction as `final_label`, but leaves
+        `reviewed=False` so downstream code can distinguish unresolved rows.
+        """
+        decisions = self._read_review_table(decisions_path)
+        out = df_labeled.copy()
+        out["sample_id"] = [self._sample_id_for_row(row, idx) for idx, (_, row) in enumerate(out.iterrows())]
+        if "predicted_label" not in out.columns and "label" in out.columns:
+            out["predicted_label"] = out["label"]
+        if "auto_label" not in out.columns:
+            out["auto_label"] = out["predicted_label"] if "predicted_label" in out.columns else None
+        for col in ("human_label", "review_status", "reviewer", "review_note", "review_timestamp"):
+            if col not in out.columns:
+                out[col] = None
+        if "reviewed" not in out.columns:
+            out["reviewed"] = False
+        if "final_label" not in out.columns:
+            out["final_label"] = out["predicted_label"] if "predicted_label" in out.columns else out.get("label")
+        if decisions.empty:
+            out["final_label"] = out["predicted_label"].astype(str) if "predicted_label" in out.columns else out["final_label"]
+            return out
+        decisions = decisions.drop_duplicates(subset=["sample_id"], keep="last").set_index("sample_id")
+        for idx, row in out.iterrows():
+            sid = str(row.get("sample_id", ""))
+            pred = row.get("predicted_label", row.get("label"))
+            if sid not in decisions.index:
+                out.at[idx, "final_label"] = pred
+                continue
+            dec = decisions.loc[sid]
+            status = str(dec.get("review_status", "pending") or "pending")
+            human = dec.get("human_label")
+            out.at[idx, "human_label"] = human
+            out.at[idx, "review_status"] = status
+            out.at[idx, "reviewer"] = dec.get("reviewer")
+            out.at[idx, "review_note"] = dec.get("review_note")
+            out.at[idx, "review_timestamp"] = dec.get("review_timestamp")
+            if status == "corrected" and human is not None and str(human).strip():
+                out.at[idx, "final_label"] = str(human)
+                out.at[idx, "reviewed"] = True
+            elif status == "accepted_auto":
+                out.at[idx, "final_label"] = pred
+                out.at[idx, "reviewed"] = True
+            elif status == "skipped":
+                out.at[idx, "final_label"] = pred
+                out.at[idx, "reviewed"] = False
+            else:
+                out.at[idx, "final_label"] = pred
+                out.at[idx, "reviewed"] = False
+        return out
+
     def build_review_queue(self, df: pd.DataFrame) -> pd.DataFrame | None:
-        if "confidence" not in df.columns:
+        review = self.flag_for_review(
+            df,
+            confidence_threshold=self.confidence_threshold,
+        )
+        if not len(review):
             return None
-        low = df[df["confidence"].astype(float) < self.confidence_threshold].copy()
-        if not len(low):
-            return None
-        cols = ["uid", "text", "predicted_label", "confidence", "label_reason", "label_signals"]
-        cols = [c for c in cols if c in low.columns]
-        return low[cols]
+        return review
 
     def run(
         self,
@@ -426,29 +824,26 @@ class AnnotationAgent:
 
         _log.info("wrote spec=%s labelstudio_import=%s", spec_path, ls_path)
 
-        review = self.build_review_queue(labeled)
-        rq_path = Path(self.hitl_cfg.get("review_queue_path", self.paths.labeled_dir / "review_queue.csv"))
-        if review is not None and len(review):
-            rq_path.parent.mkdir(parents=True, exist_ok=True)
-            review.to_csv(rq_path, index=False)
+        review = self.flag_for_review(
+            labeled,
+            confidence_threshold=self.confidence_threshold,
+        )
+        rq_path = self._default_review_queue_path()
+        if len(review):
+            self.export_review_queue(review, rq_path)
             _log.info("wrote review_queue path=%s rows=%s", rq_path, len(review))
             low_ls = self.paths.labeled_dir / "labelstudio_low_confidence.json"
-            low_tasks = [
-                {
-                    "data": {
-                        "text": str(r.get("text", "")),
-                        "uid": str(r.get("uid", "")),
-                        "predicted_label": str(r.get("predicted_label", "")),
-                        "confidence": float(r.get("confidence", 0.0) or 0.0),
-                        "label_reason": str(r.get("label_reason", "")),
-                    }
-                }
-                for _, r in review.iterrows()
-            ]
-            low_ls.write_text(json.dumps(low_tasks, ensure_ascii=False, indent=2), encoding="utf-8")
+            low_ls.write_text(
+                json.dumps(self._labelstudio_tasks(review), ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
             _log.info("wrote labelstudio_low_confidence path=%s", low_ls)
         else:
-            _log.info("no low-confidence review queue (threshold=%s)", self.confidence_threshold)
+            self.export_review_queue(
+                self._normalize_review_df(pd.DataFrame(columns=REVIEW_QUEUE_COLUMNS)),
+                rq_path,
+            )
+            _log.info("no review queue items (threshold=%s)", self.confidence_threshold)
         return labeled
 
 

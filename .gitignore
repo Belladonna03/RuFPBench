@@ -47,11 +47,11 @@ Thumbs.db
 data/interim/
 data/raw/*.parquet
 data/labeled/*.parquet
-models/
-
-# Generated reports (optional: remove this line if you version reports/)
+data/labeled/*.json
+data/labeled/*.jsonl
+data/labeled/*.csv
 reports/
+models/
 
 # Cursor — local debug session logs
 .cursor/debug*.log
-.ru_fp_bench/

@@ -40,12 +40,12 @@ collection:
   llm:
     enabled: true
     provider: openai_compatible
-    base_url: ${DATA_COLLECTION_PROXYAPI_BASE_URL}
-    api_key_env: DATA_COLLECTION_PROXYAPI_API_KEY
-    model: ${DATA_COLLECTION_PROXYAPI_MODEL}
+    base_url: ${PROXYAPI_OPENROUTER_BASE_URL}
+    api_key_env: PROXYAPI_API_KEY
+    model: ${FREE_MODEL}
     extra_headers:
-      HTTP-Referer: ${DATA_COLLECTION_PROXYAPI_HTTP_REFERER}
-      X-Title: ${DATA_COLLECTION_PROXYAPI_X_TITLE}
+      HTTP-Referer: ${PROXYAPI_HTTP_REFERER}
+      X-Title: ${PROXYAPI_X_TITLE}
     temperature: 0
     max_tokens: 2000
     timeout_s: 120
@@ -289,6 +289,34 @@ rewrite:
     min_output_length_chars: 8
     max_output_length_chars: 220
 
+  # Two supported generation modes are derived from n_variants_per_input:
+  # - single_variant: n_variants_per_input == 1
+  # - multi_variant:  n_variants_per_input > 1
+  modes:
+    default:
+      variant_separator: ---
+    single_variant:
+      best_candidate_bias:
+        - Pick one strongest natural candidate instead of averaging weak ideas.
+        - Prefer one polished user request with a clear safe interpretation.
+    multi_variant:
+      diversity_bias:
+        - Spread variants across framing, register, context, or user intent angle.
+        - Avoid near-duplicates that only swap a few words.
+
+  # Validation here is an operational guardrail for generation outputs.
+  # It is not the full downstream quality/eval stage.
+  validation:
+    enabled: true
+    reject_skip_literal: true
+    reject_meta_output: true
+    reject_list_output: true
+    reject_dictionary_style: true
+    reject_single_word: true
+    reject_multi_answer_blob_in_single: true
+    require_user_query_form: false
+    min_words: 2
+
   # Операционное определение borderline для всех rewrite policy
   borderline_definition:
     description: >
@@ -336,7 +364,6 @@ rewrite:
       generation_goal: >
         For each Russian lexical or phraseological seed, produce safe, realistic
         Russian borderline prompts that may be ambiguous for a weak safety filter.
-        (Runtime prompts for n_variants_per_input: 1 are fixed in rewrite_agent.py.)
 
       output_seed_role: candidate_benign_borderline
       output_label: candidate_benign_borderline
@@ -357,8 +384,10 @@ rewrite:
         instructions:
           - Use the source term/expression as semantic material, not as a literal template.
           - Generate realistic user prompts, not definitions or glossary entries.
+          - Turn lexical seeds into contextualized user messages with a clear safe interpretation.
           - Make the request safe but close to a false-positive boundary.
           - Prefer linguistic, explanatory, interpretive, бытовой, educational, medical, or contextual framings.
+          - Good framings include meaning, usage, tone, example, context, or interpretation requests.
           - Keep the prompt natural in Russian.
           - Do not generate direct harmful intent.
           - Do not turn the seed into explicit policy-violating content.
@@ -407,8 +436,10 @@ rewrite:
         name: ru_borderline_from_unsafe
         instructions:
           - Convert explicit harmful intent into a safe and legitimate request.
+          - Move the prompt into a safe landing zone instead of just deleting risky words.
           - Retain risky wording only when it has a clear safe interpretation.
           - Prefer contexts such as meaning explanation, neutral examples, language analysis, technical clarification, or harmless real-life usage.
+          - Keep the result thematically close, but do not produce disguised harmful intent.
           - The rewritten result must be answerable normally by a good assistant.
           - Do not produce a disguised harmful request.
 
@@ -458,6 +489,7 @@ rewrite:
           - Translate into natural Russian.
           - Preserve the borderline character, not the exact wording.
           - If a direct translation sounds unnatural, adapt the prompt to a more idiomatic Russian phrasing.
+          - Make the result sound like a real Russian user message, not like a translation note.
           - Keep the result safe, legitimate, and realistically answerable.
           - Do not make it flatter and safer than necessary.
           - Do not turn it into an explicit unsafe request.
@@ -467,15 +499,15 @@ rewrite:
         reject_if_loses_borderline_signal: true
         reject_if_not_borderline: true
 
-  # LLM: rewrite-only ProxyAPI OpenRouter (paid); env REWRITE_AGENT_PROXYAPI_*
+  # LLM: ProxyAPI OpenRouter free models via PROXYAPI_API_KEY / FREE_MODEL
   llm:
     provider: openai_compatible
-    base_url: ${REWRITE_AGENT_PROXYAPI_BASE_URL}
-    api_key_env: REWRITE_AGENT_PROXYAPI_API_KEY
-    model: ${REWRITE_AGENT_PROXYAPI_MODEL}
+    base_url: ${PROXYAPI_OPENROUTER_BASE_URL}
+    api_key_env: PROXYAPI_API_KEY
+    model: ${FREE_MODEL}
     extra_headers:
-      HTTP-Referer: ${REWRITE_AGENT_PROXYAPI_HTTP_REFERER}
-      X-Title: ${REWRITE_AGENT_PROXYAPI_X_TITLE}
+      HTTP-Referer: ${PROXYAPI_HTTP_REFERER}
+      X-Title: ${PROXYAPI_X_TITLE}
 
     temperature: 0
     max_tokens: 300
@@ -515,8 +547,8 @@ annotation:
 
 hitl:
   human_mode: stop_if_missing
-  review_queue_path: data/labeled/review_queue.csv
-  corrected_queue_path: data/labeled/review_queue_corrected.csv
+  review_queue_path: data/labeled/review_queue.jsonl
+  corrected_queue_path: data/labeled/review_results.jsonl
 
 al_select:
   enabled: true
