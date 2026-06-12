@@ -2,6 +2,27 @@
 
 End-to-end, reproducible data pipeline for **«Сбор и обработка данных»**: collect seed data, optional borderline rewrite, quality cleaning, weak auto-labeling with HITL, active-learning analysis, and a baseline classifier.
 
+## Версии проекта
+
+Код разных этапов RuFPBench лежит в отдельных ветках. Переключение:
+
+```bash
+git checkout ru_fp_bench_vN
+```
+
+| Ветка | Описание |
+|-------|----------|
+| `master` (текущая) | Исходный MVP data pipeline: agents + orchestrator |
+| `ru_fp_bench_v2` | Pseudo-graph extraction (GLiNER + KeyBERT) |
+| `ru_fp_bench_v3` | Stage 1: generation pipeline |
+| `ru_fp_bench_v4` | Agentic search data gen + unsafe topics taxonomy |
+| `ru_fp_bench_v5` | Cascade miner (ранняя версия) |
+| `ru_fp_bench_v6` | Cascade miner v6 |
+| `ru_fp_bench_v7` | Cascade miner + quality hardening |
+| `ru_fp_bench_v8` | Cascade miner + scenario-first |
+| `ru_fp_bench_v9` | Cascade miner + pipeline hardening |
+| `ru_fp_bench_v10` | Cascade miner (false-reject product final) |
+
 ## Layout
 
 | Path | Role |
