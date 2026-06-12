@@ -1,0 +1,20 @@
+{
+  "total_processed": 12,
+  "total_accepted": 10,
+  "total_rejected": 2,
+  "stats_by_category": {
+    "idioms": 5,
+    "metaphors": 5
+  },
+  "stats_by_route": {
+    "direct_expansion": 10
+  },
+  "stats_by_length": {
+    "short": 3,
+    "medium": 3,
+    "long": 4
+  },
+  "reject_reasons": {
+    "too_bland": 2
+  }
+}

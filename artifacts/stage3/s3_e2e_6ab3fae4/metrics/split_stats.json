@@ -1,0 +1,16 @@
+{
+  "per_split_row_counts": {
+    "review_holdout": 1
+  },
+  "unique_families_per_split": {
+    "review_holdout": 1
+  },
+  "repaired_rows_per_split": {
+    "review_holdout": 1
+  },
+  "family_across_multiple_splits": [],
+  "cluster_across_multiple_splits": [],
+  "leakage_note": "No family/cluster should span splits when split_export enforcement is on. Non-empty lists indicate policy violation or legacy run without constraints.",
+  "policy_enforce_family": true,
+  "policy_enforce_cluster": true
+}

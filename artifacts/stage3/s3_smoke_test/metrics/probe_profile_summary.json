@@ -1,0 +1,9 @@
+{
+  "total_probe_result_rows_across_pool": 4,
+  "refusal_labeled_count": 0,
+  "refusal_rate_in_probes": 0.0,
+  "models_frequency": {
+    "model_a": 2,
+    "model_b": 2
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "generated_at": "2026-04-20T15:23:19.020464+00:00",
+  "policy": {
+    "enforce_single_split_per_family": true,
+    "enforce_single_split_per_dedup_cluster": true,
+    "balance_repaired_across_splits": true,
+    "shuffle_groups_with_seed": true
+  },
+  "split_fractions": {
+    "dev_fraction": 0.7,
+    "test_fraction": 0.2,
+    "random_seed": 42
+  },
+  "counts": {
+    "balanced_total": 1,
+    "dev": 0,
+    "test": 0,
+    "review_holdout": 1,
+    "hard_subset_export_rows": 0
+  },
+  "constraint_summary": {
+    "enforce_family": true,
+    "enforce_cluster": true
+  }
+}

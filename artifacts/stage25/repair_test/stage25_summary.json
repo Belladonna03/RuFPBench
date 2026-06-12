@@ -1,0 +1,9 @@
+{
+  "total_candidates": 10,
+  "repaired_count": 10,
+  "promoted_count": 0,
+  "failed_count": 0,
+  "stats_by_strategy": {
+    "strengthen_borderline": 10
+  }
+}

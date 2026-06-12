@@ -1,0 +1,17 @@
+{
+  "pool_size": 10,
+  "count_by_source_stage": {
+    "stage2": 10,
+    "stage25": 10
+  },
+  "count_by_source_status": {
+    "repaired_accept": 10,
+    "validated": 10
+  },
+  "count_by_stage_status_pair": {
+    "stage25:repaired_accept": 10,
+    "stage25:validated": 10,
+    "stage2:repaired_accept": 10,
+    "stage2:validated": 10
+  }
+}

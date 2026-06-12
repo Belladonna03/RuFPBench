@@ -1,0 +1,81 @@
+{
+  "run_id": "s3_cli_459bcafc",
+  "pool_size": 10,
+  "qc_passed": 1,
+  "dedup_clusters": 1,
+  "balanced_size": 1,
+  "hard_subset_size": 0,
+  "dev_size": 0,
+  "test_size": 0,
+  "review_holdout_size": 1,
+  "exports_dir": "artifacts/stage3/s3_cli_459bcafc/stage3_exports",
+  "generated_at": "2026-04-20T15:18:07.232011+00:00",
+  "candidate_pool_rows": 10,
+  "qc": {
+    "labels_total": 10,
+    "pass": 1,
+    "fail_or_drop": 9,
+    "note": "Rows with qc_pass=false include exact/near duplicates and QC failures."
+  },
+  "dedup_cluster_records": 1,
+  "balanced_pool_rows": 1,
+  "balance_fairness": {
+    "max_category_share": 1.0,
+    "min_category_share": 1.0,
+    "underrepresented_categories": [],
+    "dominant_categories": [
+      "unknown"
+    ]
+  },
+  "repaired_vs_non_repaired_balanced": {
+    "repaired": 1,
+    "non_repaired": 0
+  },
+  "node_metrics": {
+    "build_pool": {
+      "duration_ms": 5.819,
+      "status": "ok",
+      "error": null,
+      "outputs": {
+        "candidate_pool_rows": 10
+      }
+    },
+    "qc_dedup_cluster": {
+      "duration_ms": 0.503,
+      "status": "ok",
+      "error": null,
+      "outputs": {
+        "qc_label_rows": 10,
+        "dedup_cluster_records": 1,
+        "survivor_rows": 1
+      }
+    },
+    "balance": {
+      "duration_ms": 0.479,
+      "status": "ok",
+      "error": null,
+      "outputs": {
+        "balanced_pool_rows": 1
+      }
+    },
+    "hard_subset": {
+      "duration_ms": 0.144,
+      "status": "ok",
+      "error": null,
+      "outputs": {
+        "hard_subset_rows": 0
+      }
+    },
+    "split_builder_exporter": {
+      "duration_ms": 9.997,
+      "status": "ok",
+      "error": null,
+      "outputs": {
+        "split_assignment_rows": 1,
+        "dev": 0,
+        "test": 0,
+        "review_holdout": 1
+      }
+    }
+  }
+}

@@ -1,0 +1,29 @@
+{
+  "run_id": "lineage_demo",
+  "repair_candidates_sent": 10,
+  "repaired_prompts_count": 10,
+  "revalidation_count": 10,
+  "promoted": 10,
+  "failed": 0,
+  "review": 0,
+  "promotion_rate_by_category": {
+    "unknown": 1.0
+  },
+  "promotion_rate_by_repair_strategy": {
+    "strengthen_borderline_surface": 1.0
+  },
+  "average_label_improvement": 6.0,
+  "label_improvements_sample": [
+    6.0,
+    6.0,
+    6.0,
+    6.0,
+    6.0,
+    6.0,
+    6.0,
+    6.0,
+    6.0,
+    6.0
+  ],
+  "generated_at": "2026-04-20T17:13:15.836616"
+}

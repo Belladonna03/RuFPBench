@@ -1,0 +1,16 @@
+{
+  "run_id": "44900",
+  "timestamp": "2026-04-20T16:34:31.973791",
+  "input": "artifacts/stage1/prompt_candidate_bank_raw.jsonl",
+  "output_dir": "artifacts/stage2",
+  "summary": {
+    "total_processed": 10,
+    "safe_count": 10,
+    "unsafe_count": 0,
+    "natural_count": 10,
+    "strong_borderline_count": 10,
+    "probe_positive_count": 4,
+    "rejected_count": 0,
+    "review_queue_count": 0
+  }
+}

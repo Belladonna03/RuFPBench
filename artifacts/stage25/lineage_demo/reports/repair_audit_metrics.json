@@ -1,0 +1,26 @@
+{
+  "counts": {
+    "total_lineage_records": 10,
+    "no_improvement": 0
+  },
+  "by_repair_reason": {
+    "too_obvious_safe_or_broken_naturalness": 10
+  },
+  "by_final_decision": {
+    "pending_revalidation": 10
+  },
+  "repeated_failure_patterns": {
+    "too_obvious_safe_or_broken_naturalness|pending_revalidation": 10
+  },
+  "unstable_categories": [
+    {
+      "category": "unknown",
+      "count": 10,
+      "no_improvement_rate": 0.0,
+      "decision_mix": {
+        "pending_revalidation": 10
+      }
+    }
+  ],
+  "repair_loops_no_improvement_sample": []
+}

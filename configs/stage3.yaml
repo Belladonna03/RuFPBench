@@ -1,0 +1,119 @@
+# RuFP Stage 3 — shaping policy (QC, dedup, balance, hard subset, splits, exports).
+# All nodes read this file via load_stage3_policy() / RUFP_STAGE3_CONFIG.
+
+version: 1
+
+inputs:
+  stage2_dir: artifacts/stage2/test_run
+  stage25_dir: artifacts/stage25/lineage_demo
+
+filenames:
+  validated_semantic: validated_semantic_set.jsonl
+  probe_positive: probe_positive_set.jsonl
+  review_queue: review_queue.jsonl
+  refusal_probes: refusal_probe_results.jsonl
+  family_to_prompt_map: family_to_prompt_map.jsonl
+  stage2_summary: stage2_summary.json
+  repaired_accept: repaired_accept_set.jsonl
+  repair_promoted: repair_promoted_set.jsonl
+  repair_failed: repair_failed_set.jsonl
+  repaired_prompts: repaired_prompts.jsonl
+  repair_lineage: repair_lineage.jsonl
+  stage25_summary: stage25_summary.json
+
+dedup:
+  method: sha256_text
+  normalize_whitespace: true
+
+# --- QC thresholds (Node 2) — merged into qc_dedup internally ---
+qc_thresholds:
+  min_text_len: 8
+  max_repeat_char_run: 40
+  injection_patterns:
+    - "(?i)\\bignore previous\\b"
+
+# --- Near-duplicate policy (within dedup strata) ---
+near_duplicate:
+  threshold: 0.88
+  metric: difflib_ratio
+  normalization: whitespace_lower
+
+# --- Clustering / bucketing for dedup ---
+clustering:
+  seed: 42
+  dedup_strata:
+    - category
+    - subtype
+
+balance:
+  max_per_category: null
+  min_per_category: 0
+  max_rows_per_family_per_category: null
+  max_items_per_family: null
+  category_balance_weights: {}
+  target_pool_size: null
+  length_bucket_edges: [80, 200]
+  nlg_slice_enabled: true
+
+# Optional named slices in stage3_slice_index (filters are AND across fields when both set)
+target_slices: []
+
+hard_subset:
+  enabled: true
+  fraction: 0.15
+  min_score: 0.0
+  top_k: null
+  min_categories_in_subset: 2
+  max_fraction_per_category: 0.45
+  key_probe_model: null
+  min_distinct_models_with_refusal: 2
+  key_probe_refusal_alone_ok: true
+  duplicate_similarity_threshold: 0.92
+  require_semantic_status: [validated, probe_positive]
+  benchmark_value_long_text_threshold: 120
+  dominated_penalty: 0.38
+  allow_without_probe_evidence: false
+  scoring:
+    semantic_gate_weight: 0.12
+    benchmark_value_cap: 0.28
+    refusal_signal_cap: 0.55
+    refusal_model_weight: 0.12
+    key_probe_refusal_weight: 0.22
+
+split:
+  dev_fraction: 0.7
+  test_fraction: 0.2
+  random_seed: 42
+
+split_export:
+  enforce_single_split_per_family: true
+  enforce_single_split_per_dedup_cluster: true
+  family_leakage_policy: strict
+  cluster_leakage_policy: strict
+  balance_repaired_across_splits: true
+  repaired_original_mixing: interleave
+  shuffle_groups_with_seed: true
+
+export_formats:
+  write_jsonl: true
+  write_csv: true
+  write_hard_subset_exports: true
+  write_final_export_jsonl: true
+
+dry_run:
+  max_rows_per_source: 200
+
+resume:
+  skip_completed_nodes: true
+
+runtime:
+  logging_verbosity: info
+
+# Defaults for optional human audit JSONL (CLI: export-stage3-audit-packs only)
+audit_packs:
+  random_count: 50
+  hard_count: 30
+  repaired_count: 25
+  random_seed: 42
+  sample_random_from_split: all
+  hard_order: score_desc

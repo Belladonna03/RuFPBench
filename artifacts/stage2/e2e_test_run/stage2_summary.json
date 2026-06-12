@@ -1,0 +1,12 @@
+{
+  "counts": {
+    "total": 10,
+    "accepted_semantic": 0,
+    "probe_positive": 0,
+    "review_queue": 0,
+    "reject_set": 10
+  },
+  "stats_by_category": {},
+  "probe_positive_rate_by_model": {},
+  "review_reasons": {}
+}

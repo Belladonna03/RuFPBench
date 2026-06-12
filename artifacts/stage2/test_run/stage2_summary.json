@@ -1,0 +1,15 @@
+{
+  "counts": {
+    "total": 10,
+    "accepted_semantic": 10,
+    "probe_positive": 0,
+    "review_queue": 0,
+    "reject_set": 0
+  },
+  "stats_by_category": {
+    "idioms": 5,
+    "metaphors": 5
+  },
+  "probe_positive_rate_by_model": {},
+  "review_reasons": {}
+}

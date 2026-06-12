@@ -1,0 +1,14 @@
+pipeline:
+  name: "stage1_default"
+  batch_size: 5
+  routes:
+    idioms: "direct_expansion"
+    metaphors: "surface_variation"
+    default: "direct_expansion"
+
+llm:
+  provider: "mock"
+  model: "gpt-mock"
+
+output:
+  artifacts_path: "artifacts/stage1/"

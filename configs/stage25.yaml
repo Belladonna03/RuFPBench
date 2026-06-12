@@ -1,0 +1,50 @@
+# Stage 2.5 Repair Loop — policy / config (validated by Pydantic: rufp_stage25.policy.schema)
+version: 1
+
+# Node 1: which repair_reason values may enter the loop.
+# - allow: []  → any reason produced by heuristics (after exclude) is allowed
+# - allow: [ "translatedese", "too_bland" ] → whitelist
+repair_reasons:
+  allow: []
+  exclude: []
+
+# Node 2: LLM must pick one of these RepairStrategy enum values
+repair_strategies:
+  allowed:
+    - strengthen_borderline_surface
+    - remove_overt_safety_marker
+    - naturalize_russian
+    - reduce_sterility
+    - add_realistic_context
+    - sharpen_category_signal
+    - rebalance_prompt_length
+
+limits:
+  max_repairs_per_prompt: 1
+
+# Node 4: judges always run; probes optional
+revalidation:
+  run_probes: true
+  model_names:
+    - probe_a
+    - probe_b
+
+# Node 5: promotion + manual review routing
+aggregator:
+  probe_required_for_promotion: false
+  manual_review:
+    min_safety_confidence: 0.35
+    min_naturalness_confidence: 0.35
+    review_on_probe_disagreement: true
+    review_label_score_delta_below: null
+    review_on_negative_label_delta: false
+
+# Orchestrator resume / empty-input behaviour
+resume:
+  skip_completed_nodes: true
+  fail_on_empty_upstream: false
+
+# Defaults for CLI / orchestrator (override with --mock / --real / --dry-run where supported)
+runtime:
+  use_mock_clients: true
+  logging_verbosity: info

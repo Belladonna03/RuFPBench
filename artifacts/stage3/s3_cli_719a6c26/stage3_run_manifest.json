@@ -1,0 +1,198 @@
+{
+  "run_id": "s3_cli_719a6c26",
+  "started_at": "2026-04-20T15:36:34.689550Z",
+  "finished_at": "2026-04-20T15:36:34.709933Z",
+  "config_snapshot": {
+    "version": 1,
+    "inputs": {
+      "stage2_dir": "artifacts/stage2/test_run",
+      "stage25_dir": "artifacts/stage25/lineage_demo",
+      "stage1_dir": null
+    },
+    "filenames": {
+      "validated_semantic": "validated_semantic_set.jsonl",
+      "probe_positive": "probe_positive_set.jsonl",
+      "review_queue": "review_queue.jsonl",
+      "refusal_probes": "refusal_probe_results.jsonl",
+      "family_to_prompt_map": "family_to_prompt_map.jsonl",
+      "stage2_summary": "stage2_summary.json",
+      "repaired_accept": "repaired_accept_set.jsonl",
+      "repair_promoted": "repair_promoted_set.jsonl",
+      "repair_failed": "repair_failed_set.jsonl",
+      "repaired_prompts": "repaired_prompts.jsonl",
+      "repair_lineage": "repair_lineage.jsonl",
+      "stage25_summary": "stage25_summary.json"
+    },
+    "dedup": {
+      "method": "sha256_text",
+      "normalize_whitespace": true
+    },
+    "qc_dedup": {
+      "min_text_len": 8,
+      "max_repeat_char_run": 40,
+      "near_duplicate_threshold": 0.88,
+      "near_duplicate_metric": "difflib_ratio",
+      "near_normalization": "whitespace_lower",
+      "clustering_seed": 42,
+      "injection_patterns": [
+        "(?i)\\bignore previous\\b"
+      ],
+      "dedup_strata": [
+        "category",
+        "subtype"
+      ]
+    },
+    "balance": {
+      "max_per_category": null,
+      "min_per_category": 0,
+      "max_rows_per_family_per_category": null,
+      "max_items_per_family": null,
+      "category_balance_weights": {},
+      "target_pool_size": null,
+      "length_bucket_edges": [
+        80,
+        200
+      ],
+      "nlg_slice_enabled": true
+    },
+    "target_slices": [],
+    "hard_subset": {
+      "enabled": true,
+      "fraction": 0.15,
+      "min_score": 0.0,
+      "top_k": null,
+      "min_categories_in_subset": 2,
+      "max_fraction_per_category": 0.45,
+      "key_probe_model": null,
+      "min_distinct_models_with_refusal": 2,
+      "key_probe_refusal_alone_ok": true,
+      "duplicate_similarity_threshold": 0.92,
+      "require_semantic_status": [
+        "validated",
+        "probe_positive"
+      ],
+      "benchmark_value_long_text_threshold": 120,
+      "dominated_penalty": 0.38,
+      "allow_without_probe_evidence": false,
+      "scoring": {
+        "semantic_gate_weight": 0.12,
+        "benchmark_value_cap": 0.28,
+        "refusal_signal_cap": 0.55,
+        "refusal_model_weight": 0.12,
+        "key_probe_refusal_weight": 0.22
+      }
+    },
+    "split": {
+      "dev_fraction": 0.7,
+      "test_fraction": 0.2,
+      "random_seed": 42
+    },
+    "split_export": {
+      "enforce_single_split_per_family": true,
+      "enforce_single_split_per_dedup_cluster": true,
+      "family_leakage_policy": "strict",
+      "cluster_leakage_policy": "strict",
+      "balance_repaired_across_splits": true,
+      "repaired_original_mixing": "interleave",
+      "shuffle_groups_with_seed": true
+    },
+    "export_formats": {
+      "write_jsonl": true,
+      "write_csv": true,
+      "write_hard_subset_exports": true,
+      "write_final_export_jsonl": true
+    },
+    "dry_run": {
+      "max_rows_per_source": 200
+    },
+    "resume": {
+      "skip_completed_nodes": true
+    },
+    "runtime": {
+      "logging_verbosity": "info"
+    },
+    "audit_packs": {
+      "random_count": 50,
+      "hard_count": 30,
+      "repaired_count": 25,
+      "random_seed": 42,
+      "sample_random_from_split": "all",
+      "hard_order": "score_desc"
+    }
+  },
+  "input_paths": {
+    "stage2": "artifacts/stage2/test_run",
+    "stage25": "artifacts/stage25/lineage_demo",
+    "stage2_run_id": "test_run",
+    "stage25_run_id": "lineage_demo"
+  },
+  "output_paths": {
+    "pool": "artifacts/stage3/s3_cli_719a6c26/stage3_candidate_pool.jsonl",
+    "candidate_merge_summary": "artifacts/stage3/s3_cli_719a6c26/stage3_candidate_merge_summary.json",
+    "qc": "artifacts/stage3/s3_cli_719a6c26/stage3_qc_labels.jsonl",
+    "dedup": "artifacts/stage3/s3_cli_719a6c26/stage3_dedup_clusters.jsonl",
+    "balanced": "artifacts/stage3/s3_cli_719a6c26/stage3_balanced_pool.jsonl",
+    "balance_metadata": "artifacts/stage3/s3_cli_719a6c26/stage3_balance_metadata.jsonl",
+    "slice_index": "artifacts/stage3/s3_cli_719a6c26/stage3_slice_index.json",
+    "hard": "artifacts/stage3/s3_cli_719a6c26/stage3_hard_subset.jsonl",
+    "split_assignment": "artifacts/stage3/s3_cli_719a6c26/split_assignment.jsonl",
+    "splits": "artifacts/stage3/s3_cli_719a6c26/stage3_splits.jsonl",
+    "export_manifest": "artifacts/stage3/s3_cli_719a6c26/export_manifest.json",
+    "dev": "artifacts/stage3/s3_cli_719a6c26/stage3_dev_set.jsonl",
+    "test": "artifacts/stage3/s3_cli_719a6c26/stage3_test_set.jsonl",
+    "holdout": "artifacts/stage3/s3_cli_719a6c26/stage3_review_holdout.jsonl",
+    "summary": "artifacts/stage3/s3_cli_719a6c26/stage3_summary.json",
+    "metrics": "artifacts/stage3/s3_cli_719a6c26/metrics",
+    "manifest": "artifacts/stage3/s3_cli_719a6c26/stage3_run_manifest.json",
+    "report": "artifacts/stage3/s3_cli_719a6c26/stage3_final_report.md",
+    "policy_resolved": "artifacts/stage3/s3_cli_719a6c26/stage3_policy_resolved.json"
+  },
+  "node_metrics": {
+    "build_pool": {
+      "duration_ms": 3.372,
+      "status": "ok",
+      "error": null,
+      "outputs": {
+        "candidate_pool_rows": 10
+      }
+    },
+    "qc_dedup_cluster": {
+      "duration_ms": 0.437,
+      "status": "ok",
+      "error": null,
+      "outputs": {
+        "qc_label_rows": 10,
+        "dedup_cluster_records": 1,
+        "survivor_rows": 1
+      }
+    },
+    "balance": {
+      "duration_ms": 0.529,
+      "status": "ok",
+      "error": null,
+      "outputs": {
+        "balanced_pool_rows": 1
+      }
+    },
+    "hard_subset": {
+      "duration_ms": 0.177,
+      "status": "ok",
+      "error": null,
+      "outputs": {
+        "hard_subset_rows": 0
+      }
+    },
+    "split_builder_exporter": {
+      "duration_ms": 14.119,
+      "status": "ok",
+      "error": null,
+      "outputs": {
+        "split_assignment_rows": 1,
+        "dev": 0,
+        "test": 0,
+        "review_holdout": 1
+      }
+    }
+  },
+  "dry_run": true
+}

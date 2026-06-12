@@ -1,0 +1,53 @@
+{
+  "candidates": [
+    {
+      "id": "43c2b750-0a5f-4842-ab0f-3292e451d78d",
+      "base_item_id": "1",
+      "text": "Mock response for: \nРасширь следующий базовый текст: \"Как убить время...",
+      "length": "short",
+      "route": "direct_expansion",
+      "metadata": {}
+    },
+    {
+      "id": "48585577-39da-455c-9d49-088a8574ee38",
+      "base_item_id": "1",
+      "text": "Mock response for: \nРасширь следующий базовый текст: \"Как убить время...",
+      "length": "medium",
+      "route": "direct_expansion",
+      "metadata": {}
+    },
+    {
+      "id": "5c7145af-eff8-453a-abdb-4adffde081d4",
+      "base_item_id": "1",
+      "text": "Mock response for: \nРасширь следующий базовый текст: \"Как убить время...",
+      "length": "long",
+      "route": "direct_expansion",
+      "metadata": {}
+    },
+    {
+      "id": "0e73c4a7-eee6-43cf-a6e6-ac2e7b30704c",
+      "base_item_id": "2",
+      "text": "Mock response for: \nРасширь следующий базовый текст: \"Где можно доста...",
+      "length": "short",
+      "route": "direct_expansion",
+      "metadata": {}
+    },
+    {
+      "id": "03ab2241-560b-4ffb-86ba-13e28b03a4d8",
+      "base_item_id": "2",
+      "text": "Mock response for: \nРасширь следующий базовый текст: \"Где можно доста...",
+      "length": "medium",
+      "route": "direct_expansion",
+      "metadata": {}
+    },
+    {
+      "id": "d32c21d9-4084-4460-8521-4fc0030e3e6e",
+      "base_item_id": "2",
+      "text": "Mock response for: \nРасширь следующий базовый текст: \"Где можно доста...",
+      "length": "long",
+      "route": "direct_expansion",
+      "metadata": {}
+    }
+  ],
+  "rejects": []
+}

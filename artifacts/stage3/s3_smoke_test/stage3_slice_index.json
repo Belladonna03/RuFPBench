@@ -1,0 +1,21 @@
+{
+  "slices": {
+    "category:unknown": [
+      "s3-17703e3fcd0bc7a1"
+    ],
+    "probe_positive": [],
+    "repaired": [
+      "s3-17703e3fcd0bc7a1"
+    ],
+    "vendor_sensitive": [
+      "s3-17703e3fcd0bc7a1"
+    ]
+  },
+  "counts": {
+    "category:unknown": 1,
+    "probe_positive": 0,
+    "repaired": 1,
+    "vendor_sensitive": 1
+  },
+  "config_fingerprint": "eb58bb4ca5bc"
+}

@@ -1,0 +1,71 @@
+{
+  "candidates": [
+    {
+      "id": "7f923889-f5d1-4911-a296-b2cb616d7e48",
+      "base_item_id": "1",
+      "text": "Mock response for: \nСлегка измени текст, чтобы он звучал более провок...",
+      "length": "short",
+      "route": "direct_expansion",
+      "metadata": {
+        "raw_text": "Mock response for: \nРасширь следующий базовый текст: \"Как убить время...",
+        "natural_text": "Mock response for: \nИсправь следующий текст, чтобы он звучал как есте..."
+      }
+    },
+    {
+      "id": "79f72867-dcd2-4c6c-957c-fcd85f23e2b2",
+      "base_item_id": "1",
+      "text": "Mock response for: \nСлегка измени текст, чтобы он звучал более провок...",
+      "length": "medium",
+      "route": "direct_expansion",
+      "metadata": {
+        "raw_text": "Mock response for: \nРасширь следующий базовый текст: \"Как убить время...",
+        "natural_text": "Mock response for: \nИсправь следующий текст, чтобы он звучал как есте..."
+      }
+    },
+    {
+      "id": "4f57094c-4eae-4748-b982-4bbf587bcc77",
+      "base_item_id": "1",
+      "text": "Mock response for: \nСлегка измени текст, чтобы он звучал более провок...",
+      "length": "long",
+      "route": "direct_expansion",
+      "metadata": {
+        "raw_text": "Mock response for: \nРасширь следующий базовый текст: \"Как убить время...",
+        "natural_text": "Mock response for: \nИсправь следующий текст, чтобы он звучал как есте..."
+      }
+    },
+    {
+      "id": "3b1f4c55-da8f-4eab-bd97-190d0ed993a4",
+      "base_item_id": "2",
+      "text": "Mock response for: \nСлегка измени текст, чтобы он звучал более провок...",
+      "length": "short",
+      "route": "direct_expansion",
+      "metadata": {
+        "raw_text": "Mock response for: \nРасширь следующий базовый текст: \"Где можно доста...",
+        "natural_text": "Mock response for: \nИсправь следующий текст, чтобы он звучал как есте..."
+      }
+    },
+    {
+      "id": "b96ff888-cee1-41a4-a6c3-044859804aa5",
+      "base_item_id": "2",
+      "text": "Mock response for: \nСлегка измени текст, чтобы он звучал более провок...",
+      "length": "medium",
+      "route": "direct_expansion",
+      "metadata": {
+        "raw_text": "Mock response for: \nРасширь следующий базовый текст: \"Где можно доста...",
+        "natural_text": "Mock response for: \nИсправь следующий текст, чтобы он звучал как есте..."
+      }
+    },
+    {
+      "id": "9b085c64-c327-44be-8b83-e6c99d7278e3",
+      "base_item_id": "2",
+      "text": "Mock response for: \nСлегка измени текст, чтобы он звучал более провок...",
+      "length": "long",
+      "route": "direct_expansion",
+      "metadata": {
+        "raw_text": "Mock response for: \nРасширь следующий базовый текст: \"Где можно доста...",
+        "natural_text": "Mock response for: \nИсправь следующий текст, чтобы он звучал как есте..."
+      }
+    }
+  ],
+  "rejects": []
+}

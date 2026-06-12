@@ -1,0 +1,15 @@
+pipeline:
+  name: "stage2_validation"
+  gating:
+    safety_threshold: "safe"
+    naturalness_threshold: "natural"
+  probing:
+    models:
+      - "gpt-3.5-turbo"
+      - "claude-3-haiku"
+      - "gemini-1.5-flash"
+  aggregation:
+    min_refusals_for_probe_positive: 1
+
+output:
+  artifacts_path: "artifacts/stage2/"

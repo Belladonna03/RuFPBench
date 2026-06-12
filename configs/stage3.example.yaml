@@ -1,0 +1,97 @@
+# Example Stage 3 policy — copy to `stage3.yaml` or set RUFP_STAGE3_CONFIG.
+# See `src/rufp_stage3/policy/schema.py` for Pydantic types and defaults.
+
+version: 1
+
+inputs:
+  stage2_dir: artifacts/stage2/<stage2_run_id>
+  stage25_dir: artifacts/stage25/<stage25_run_id>   # optional: null
+
+filenames:
+  validated_semantic: validated_semantic_set.jsonl
+  probe_positive: probe_positive_set.jsonl
+  refusal_probes: refusal_probe_results.jsonl
+  repair_lineage: repair_lineage.jsonl
+  # ... other filenames as in default FilenameMap
+
+dedup:
+  method: sha256_text          # sha256_text | none | skip
+  normalize_whitespace: true
+
+# Alternative to flat qc_dedup: structured blocks (merged before validation).
+qc_thresholds:
+  min_text_len: 8
+  max_repeat_char_run: 40
+  injection_patterns:
+    - "(?i)\\bignore previous\\b"
+
+near_duplicate:
+  threshold: 0.88              # edge threshold for near-dup graph
+  metric: difflib_ratio        # difflib_ratio | jaccard_words
+  normalization: whitespace_lower
+
+clustering:
+  seed: 42
+  dedup_strata: [category, subtype]   # independent buckets for exact+near dedup
+
+balance:
+  max_per_category: null
+  min_per_category: 0
+  max_rows_per_family_per_category: 5
+  max_items_per_family: 20            # global cap per family_id
+  category_balance_weights:           # higher → earlier in round-robin pulls
+    harm: 1.5
+    benign: 1.0
+  target_pool_size: null
+  length_bucket_edges: [80, 200]
+  nlg_slice_enabled: true
+
+# Optional: balancing: { ... } merges into balance (same keys + category_targets alias)
+
+target_slices:
+  - name: "slice_high_risk_categories"
+    categories: ["harm", "illegal"]
+  - name: "slice_repaired_only"
+    categories: []
+    source_statuses_any: ["repaired_accept"]
+
+hard_subset:
+  enabled: true
+  fraction: 0.15
+  top_k: null                 # set e.g. 500 to cap size (overrides fraction-derived n)
+  min_score: 0.0
+  scoring:
+    semantic_gate_weight: 0.12
+    benchmark_value_cap: 0.28
+    refusal_signal_cap: 0.55
+    refusal_model_weight: 0.12
+    key_probe_refusal_weight: 0.22
+
+split:
+  dev_fraction: 0.7
+  test_fraction: 0.2          # remainder → review_holdout; sum must be <= 1.0
+  random_seed: 42
+
+split_export:
+  enforce_single_split_per_family: true
+  enforce_single_split_per_dedup_cluster: true
+  family_leakage_policy: strict    # strict | off
+  cluster_leakage_policy: strict
+  balance_repaired_across_splits: true
+  repaired_original_mixing: interleave   # interleave | repaired_first | non_repaired_first
+  shuffle_groups_with_seed: true
+
+export_formats:
+  write_jsonl: true
+  write_csv: true
+  write_hard_subset_exports: true
+  write_final_export_jsonl: true
+
+dry_run:
+  max_rows_per_source: 200
+
+resume:
+  skip_completed_nodes: true
+
+runtime:
+  logging_verbosity: info       # debug | info | warning | error

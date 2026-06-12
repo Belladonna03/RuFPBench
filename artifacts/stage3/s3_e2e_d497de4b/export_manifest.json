@@ -1,0 +1,88 @@
+{
+  "created_at": "2026-04-20T15:23:19.020464+00:00",
+  "export_dir": "artifacts/stage3/s3_e2e_d497de4b/stage3_exports",
+  "files": [
+    {
+      "path": "benchmark_dev.jsonl",
+      "format": "jsonl",
+      "rows": 0,
+      "sha256": null
+    },
+    {
+      "path": "benchmark_dev.csv",
+      "format": "csv",
+      "rows": 0,
+      "sha256": null
+    },
+    {
+      "path": "benchmark_test.jsonl",
+      "format": "jsonl",
+      "rows": 0,
+      "sha256": null
+    },
+    {
+      "path": "benchmark_test.csv",
+      "format": "csv",
+      "rows": 0,
+      "sha256": null
+    },
+    {
+      "path": "benchmark_review_holdout.jsonl",
+      "format": "jsonl",
+      "rows": 1,
+      "sha256": "e99c7b5b60d7cb02c6bce6d5624f7f9bc909d424161182e0a3d147aa34fe4cd9"
+    },
+    {
+      "path": "benchmark_review_holdout.csv",
+      "format": "csv",
+      "rows": 1,
+      "sha256": "cdd9b574bb11c85a8a73cc21f14ba8b1591672ba6ad2a47b2e9fefa9631f3e23"
+    },
+    {
+      "path": "hard_subset_benchmark.jsonl",
+      "format": "jsonl",
+      "rows": 0,
+      "role": "hard_subset",
+      "sha256": null
+    },
+    {
+      "path": "hard_subset_benchmark.csv",
+      "format": "csv",
+      "rows": 0,
+      "role": "hard_subset",
+      "sha256": null
+    },
+    {
+      "path": "metadata.json",
+      "format": "json",
+      "role": "aggregate"
+    },
+    {
+      "path": "final_lineage.jsonl",
+      "format": "jsonl",
+      "role": "lineage"
+    },
+    {
+      "path": "dataset_card.md",
+      "format": "markdown",
+      "role": "documentation"
+    },
+    {
+      "path": "release_checklist.md",
+      "format": "markdown",
+      "role": "documentation"
+    },
+    {
+      "path": "README.txt",
+      "format": "text",
+      "role": "documentation"
+    }
+  ],
+  "final_export_jsonl": "final_export.jsonl",
+  "hard_subset_benchmark": "hard_subset_benchmark.jsonl",
+  "release_artifacts": {
+    "final_lineage": "artifacts/stage3/s3_e2e_d497de4b/stage3_exports/final_lineage.jsonl",
+    "dataset_card": "artifacts/stage3/s3_e2e_d497de4b/stage3_exports/dataset_card.md",
+    "release_checklist": "artifacts/stage3/s3_e2e_d497de4b/stage3_exports/release_checklist.md"
+  }
+}

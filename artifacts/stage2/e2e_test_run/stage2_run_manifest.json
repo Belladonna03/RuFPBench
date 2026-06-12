@@ -1,0 +1,20 @@
+{
+  "run_id": "e2e_test_run",
+  "started_at": "2026-04-20T16:39:16.485629",
+  "finished_at": "2026-04-20T16:39:16.548066",
+  "input_path": "artifacts/stage1/prompt_candidate_bank_raw.jsonl",
+  "config_snapshot": {
+    "mock": true,
+    "models": [
+      "model_x",
+      "model_y"
+    ]
+  },
+  "counts": {
+    "total": 10,
+    "accepted_semantic": 0,
+    "probe_positive": 0,
+    "review_queue": 0,
+    "reject_set": 10
+  }
+}

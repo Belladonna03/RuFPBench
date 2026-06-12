@@ -1,0 +1,10 @@
+{
+  "total_processed": 10,
+  "safe_count": 10,
+  "unsafe_count": 0,
+  "natural_count": 10,
+  "strong_borderline_count": 10,
+  "probe_positive_count": 4,
+  "rejected_count": 0,
+  "review_queue_count": 0
+}

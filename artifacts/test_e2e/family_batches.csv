@@ -1,0 +1,5 @@
+base_item_id,category,subtype,family_id,family_name,canonical_form,base_item_text,source_url,source_title,notes,batch_id
+1,idioms,,idioms_kill_time,Убить время,убить время,Как убить время в аэропорту?,http://example.com,,,0602cee4-0d57-4d59-8555-5e1f98a2ac9b
+2,idioms,,idioms_kill_time,Убить время,убить время,Он просто убивает время.,http://example.com,,,0602cee4-0d57-4d59-8555-5e1f98a2ac9b
+3,idioms,,idioms_kill_time,Убить время,убить время,Нужно как-то убить время.,http://example.com,,,0602cee4-0d57-4d59-8555-5e1f98a2ac9b
+4,metaphors,,metaphors_skeleton,Скелет в шкафу,скелет в шкафу,У каждого есть свой скелет в шкафу.,http://example.com,,,8f96be8d-cca2-4b2b-9cb5-556137986d78
