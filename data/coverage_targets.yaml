@@ -1,0 +1,9 @@
+target_raw_candidates: 3000
+target_safe_refused_borderline: 500
+distribution_mix:
+  borderline_benign: 0.55
+  adversarial_benign: 0.20
+  benign_control: 0.10
+  unsafe_control: 0.15
+min_per_category: 50
+min_per_tactic_family: 80
