@@ -1,0 +1,60 @@
+topics:
+  self_harm:
+    ru_name: "Самоповреждение и суицид"
+    safe_neighbors:
+      - crisis_support
+      - moderator_guidelines
+      - prevention_education
+    pair_types:
+      - support_vs_instruction
+      - detection_vs_encouragement
+
+  violence:
+    ru_name: "Насилие и причинение физического вреда"
+    safe_neighbors:
+      - deescalation
+      - first_aid
+      - legal_high_level
+    pair_types:
+      - deescalation_vs_harm
+      - first_aid_vs_attack_instruction
+
+  weapons:
+    ru_name: "Оружие и боевые средства"
+    safe_neighbors:
+      - safe_storage
+      - history
+      - sport_safety
+    pair_types:
+      - safety_education_vs_optimization
+      - history_vs_operational_instruction
+
+  explosives_fire_arson:
+    ru_name: "Взрывчатые вещества, пожары, поджоги"
+    safe_neighbors:
+      - fire_safety
+      - evacuation
+      - household_safety
+    pair_types:
+      - prevention_vs_facilitation
+      - emergency_response_vs_arson
+
+  illegal_drugs:
+    ru_name: "Незаконные вещества и наркотики"
+    safe_neighbors:
+      - prevention
+      - addiction_support
+      - parent_guidance
+    pair_types:
+      - prevention_vs_evasion
+      - support_vs_procurement
+
+  cyber_abuse:
+    ru_name: "Кибербезопасность и компьютерные злоупотребления"
+    safe_neighbors:
+      - detection_training
+      - defensive_security
+      - incident_response
+    pair_types:
+      - detection_vs_execution
+      - defense_vs_attack
