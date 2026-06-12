@@ -1,57 +1,8 @@
-# Byte-compiled / packaging
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
-.Python
-build/
-dist/
-*.egg-info/
-.eggs/
-*.egg
-
-# Virtual environments
 .venv/
-.ru_fp_bench/
-venv/
-env/
-ENV/
-
-# Environment & secrets (load via load_config / dotenv)
-.env
-.env.*
-!.env.dist
-!.env.example
-
-# Test / type / lint caches
+__pycache__/
+*.pyc
 .pytest_cache/
-.mypy_cache/
-.ruff_cache/
-htmlcov/
-.coverage
-.coverage.*
-coverage.xml
-*.cover
-
-# OS
 .DS_Store
-Thumbs.db
-
-# IDE (keep shared VS Code snippets if you add them: !.vscode/extensions.json)
-.idea/
-
-# Jupyter
-.ipynb_checkpoints/
-
-# RuFPBench — large / reproducible pipeline outputs (un-ignore fixtures with git add -f if needed)
-data/interim/
-data/raw/*.parquet
-data/labeled/*.parquet
-data/labeled/*.json
-data/labeled/*.jsonl
-data/labeled/*.csv
-reports/
-models/
-
-# Cursor — local debug session logs
-.cursor/debug*.log
+.env
+.env.proxyapi
+data/ru_paradetox/
