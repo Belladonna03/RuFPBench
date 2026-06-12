@@ -1,0 +1,2 @@
+[console_scripts]
+rufpbench = rufpbench.cli:app
