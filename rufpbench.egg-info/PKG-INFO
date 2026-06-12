@@ -1,3 +1,24 @@
+Metadata-Version: 2.4
+Name: rufpbench
+Version: 0.3.1
+Summary: RuFPBench cascade miner: Russian false-positive / over-refusal benchmark generation.
+Author: RuFPBench Research
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+Requires-Dist: openai>=1.40.0
+Requires-Dist: langchain-gigachat>=0.3.0
+Requires-Dist: python-dotenv>=1.0.1
+Requires-Dist: pydantic>=2.7.0
+Requires-Dist: PyYAML>=6.0.1
+Requires-Dist: typer>=0.12.3
+Requires-Dist: rich>=13.7.1
+Requires-Dist: tqdm>=4.66.4
+Provides-Extra: hf
+Requires-Dist: datasets>=2.19.0; extra == "hf"
+Provides-Extra: dev
+Requires-Dist: pytest>=8.2.0; extra == "dev"
+Requires-Dist: ruff>=0.5.0; extra == "dev"
+
 # RuFPBench Cascade Miner
 
 Проект генерирует русский false-positive / over-refusal borderline dataset: запросы на русском, которые **безопасны по ожидаемому ответу**, но выглядят достаточно чувствительно, чтобы target-модель могла ошибочно отказаться.
