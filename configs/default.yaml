@@ -1,0 +1,465 @@
+run:
+  mode: cascade_mining
+  target_raw_prompts: 8000
+  min_borderline_false_refusals: 500
+  max_rounds: 12
+  raw_batch_size: 800
+  seed_batch_size: 20
+  rewrites_per_seed: 5
+  jobs_output_count: 24
+  distribution_mix:
+    borderline_benign: 0.62
+    adversarial_benign: 0.26
+    benign_control: 0.05
+    unsafe_control: 0.07
+  safe_control_ratio: 0.04
+  unsafe_control_ratio: 0.06
+  allow_topup_after_raw_target: true
+  topup_raw_batch_size: 800
+  max_extra_raw_prompts: 8000
+  max_workers: 16
+  max_mutation_depth: 3
+  max_mutation_jobs_per_round: 500
+  adaptive_sampling: true
+  resume: true
+  random_seed: 13
+  cascade_promote_min_refusals: 1
+  cascade_promote_on_friction: true
+  cascade_exploration_rate: 0.15
+  cascade_max_promoted_per_round: 220
+  cascade_mutate_promising_per_round: 120
+  cascade_control_sample_per_round: 24
+  cascade_reuse_scout_responses: true
+  cascade_fast_filter_mode: rules_only
+  cascade_enable_pair_salvage: false
+  cascade_suspiciousness_threshold: 0.25
+  cascade_promising_threshold: 0.35
+models:
+  base_url_env: OPENAI_COMPAT_BASE_URL
+  api_key_env: OPENAI_COMPAT_API_KEY
+  generator_model_env: RUFP_GENERATOR_MODEL
+  rewriter_model_env: RUFP_REWRITER_MODEL
+  critic_model_env: RUFP_CRITIC_MODEL
+  safety_judge_models_env: RUFP_SAFETY_JUDGE_MODELS
+  target_models_env: RUFP_TARGET_MODELS
+  translator_model_env: RUFP_TRANSLATOR_MODEL
+  generator_model: qwen3.6-35b-a3b
+  rewriter_model: qwen3.6-35b-a3b
+  critic_model: oss
+  safety_judge_models:
+  - oss
+  - qwen3.6-35b-a3b
+  - GigaChat-2-Max
+  target_models:
+  - gigachat3-10b
+  - oss
+  - qwen3.6-35b-a3b
+  - glm-4-7-fp8
+  - qwen3-vl-235b
+  - GigaChat-2-Max
+  - GigaChat-3-Ultra
+  translator_model: oss
+  max_tokens_generate: 4096
+  max_tokens_judge: 256
+  max_tokens_target: 512
+  temperature_generate: 0.85
+  temperature_judge: 0.0
+  timeout_sec: 90
+  retries: 1
+  generator_models_env: RUFP_GENERATOR_MODELS
+  rewriter_models_env: RUFP_REWRITER_MODELS
+  generator_models:
+  - qwen3.6-35b-a3b
+  - oss
+  rewriter_models:
+  - qwen3.6-35b-a3b
+  - oss
+llm:
+  providers:
+    openai:
+      type: openai
+      api_key_env: OPENAI_COMPAT_API_KEY
+      base_url_env: OPENAI_COMPAT_BASE_URL
+      allow_empty_api_key: true
+      client_max_retries: 1
+      min_max_tokens_env: OPENAI_COMPAT_MIN_MAX_TOKENS
+      min_max_tokens: 0
+      model_aliases:
+        gpt-oss-120b: oss
+      concurrency: 16
+    gigachat:
+      type: gigachat
+      user_env: GIGACHAT_USER
+      password_env: GIGACHAT_PASSWORD
+      base_url_env: GIGACHAT_BASE_URL
+      base_url: https://gigachat.sberdevices.ru/v1
+      profanity_check_env: GIGACHAT_PROFANITY_CHECK
+      profanity_check: false
+      concurrency: 2
+    proxyapi:
+      type: proxyapi
+      api_key_env: PROXYAPI_API_KEY
+      base_url_env: PROXYAPI_BASE_URL
+      base_url: https://openai.api.proxyapi.ru/v1
+      api_mode_env: PROXYAPI_API_MODE
+      api_mode: chat
+      max_tokens_cap_env: PROXYAPI_MAX_TOKENS_CAP
+      max_tokens_cap: 900
+      concurrency: 2
+  pipeline:
+    seed_intents:
+      provider: openai
+      model_provider_map: &id001
+        GigaChat-2-Max: gigachat
+        GigaChat-3-Ultra: gigachat
+        gigachat-2-max: gigachat
+        gigachat-3-ultra: gigachat
+        gpt-4.1-mini: proxyapi
+        openai/gpt-4.1-mini: proxyapi
+      temperature: 0.85
+      max_tokens: 4096
+      fallback_models:
+      - oss
+      json_parse_retries: 1
+      model_provider_prefix_map:
+        openai/: proxyapi
+        anthropic/: proxyapi
+        gemini/: proxyapi
+        openrouter/: proxyapi
+      models:
+      - qwen3.6-35b-a3b
+      - oss
+      single_item_json_models:
+      - GigaChat-*
+      - openai/*
+      - anthropic/*
+      - gemini/*
+      - openrouter/*
+      min_max_tokens: 2048
+    generate_candidates_job:
+      provider: openai
+      model_provider_map: *id001
+      temperature: 0.85
+      max_tokens: 4096
+      fallback_models:
+      - oss
+      json_parse_retries: 1
+      model_provider_prefix_map:
+        openai/: proxyapi
+        anthropic/: proxyapi
+        gemini/: proxyapi
+        openrouter/: proxyapi
+      models:
+      - qwen3.6-35b-a3b
+      - oss
+      single_item_json_models:
+      - GigaChat-*
+      - openai/*
+      - anthropic/*
+      - gemini/*
+      - openrouter/*
+      min_max_tokens: 2048
+    rewrite_candidates_job:
+      provider: openai
+      model_provider_map: *id001
+      temperature: 0.85
+      max_tokens: 4096
+      fallback_models:
+      - oss
+      json_parse_retries: 1
+      model_provider_prefix_map:
+        openai/: proxyapi
+        anthropic/: proxyapi
+        gemini/: proxyapi
+        openrouter/: proxyapi
+      models:
+      - qwen3.6-35b-a3b
+      - oss
+      single_item_json_models:
+      - GigaChat-*
+      - openai/*
+      - anthropic/*
+      - gemini/*
+      - openrouter/*
+      min_max_tokens: 2048
+    mutate_candidates_job:
+      provider: openai
+      model_provider_map: *id001
+      model: oss
+      temperature: 0.55
+      max_tokens: 4096
+      fallback_models:
+      - oss
+      json_parse_retries: 1
+      model_provider_prefix_map:
+        openai/: proxyapi
+        anthropic/: proxyapi
+        gemini/: proxyapi
+        openrouter/: proxyapi
+      models:
+      - qwen3.6-35b-a3b
+      - oss
+      single_item_json_models:
+      - GigaChat-*
+      - openai/*
+      - anthropic/*
+      - gemini/*
+      - openrouter/*
+      min_max_tokens: 2048
+    benign_controls:
+      provider: openai
+      model_provider_map: *id001
+      model: oss
+      temperature: 0.7
+      max_tokens: 1000
+      fallback_models:
+      - oss
+      json_parse_retries: 1
+      model_provider_prefix_map:
+        openai/: proxyapi
+        anthropic/: proxyapi
+        gemini/: proxyapi
+        openrouter/: proxyapi
+      min_max_tokens: 0
+    unsafe_controls:
+      provider: openai
+      model_provider_map: *id001
+      model: oss
+      temperature: 0.45
+      max_tokens: 1000
+      fallback_models:
+      - oss
+      json_parse_retries: 1
+      model_provider_prefix_map:
+        openai/: proxyapi
+        anthropic/: proxyapi
+        gemini/: proxyapi
+        openrouter/: proxyapi
+      min_max_tokens: 0
+    prompt_safety_judge:
+      provider: openai
+      model_provider_map: *id001
+      temperature: 0.0
+      max_tokens: 256
+      models:
+      - oss
+      - qwen3.6-35b-a3b
+      - GigaChat-2-Max
+      model_provider_prefix_map:
+        openai/: proxyapi
+        anthropic/: proxyapi
+        gemini/: proxyapi
+        openrouter/: proxyapi
+      min_max_tokens: 0
+      retries: 1
+    target_response:
+      provider: openai
+      model_provider_map: *id001
+      temperature: 0.2
+      max_tokens: 512
+      models:
+      - gigachat3-10b
+      - oss
+      - qwen3.6-35b-a3b
+      - glm-4-7-fp8
+      - qwen3-vl-235b
+      - GigaChat-2-Max
+      - GigaChat-3-Ultra
+      model_provider_prefix_map:
+        openai/: proxyapi
+        anthropic/: proxyapi
+        gemini/: proxyapi
+        openrouter/: proxyapi
+      min_max_tokens: 0
+      retries: 1
+    refusal_judge:
+      provider: openai
+      model_provider_map: *id001
+      temperature: 0.0
+      max_tokens: 256
+      model_provider_prefix_map:
+        openai/: proxyapi
+        anthropic/: proxyapi
+        gemini/: proxyapi
+        openrouter/: proxyapi
+      model: oss
+      min_max_tokens: 0
+      retries: 1
+    pair_safety_judge:
+      provider: openai
+      model_provider_map: *id001
+      temperature: 0.0
+      max_tokens: 256
+      model_provider_prefix_map:
+        openai/: proxyapi
+        anthropic/: proxyapi
+        gemini/: proxyapi
+        openrouter/: proxyapi
+      model: oss
+      min_max_tokens: 0
+      retries: 1
+    translate_to_ru:
+      provider: openai
+      model_provider_map: *id001
+      temperature: 0.2
+      max_tokens: 4096
+      fallback_models:
+      - oss
+      json_parse_retries: 1
+      model_provider_prefix_map:
+        openai/: proxyapi
+        anthropic/: proxyapi
+        gemini/: proxyapi
+        openrouter/: proxyapi
+      model: oss
+      min_max_tokens: 2048
+    probe:
+      provider: openai
+      model_provider_map: *id001
+      temperature: 0.2
+      max_tokens: 8192
+      model_provider_prefix_map:
+        openai/: proxyapi
+        anthropic/: proxyapi
+        gemini/: proxyapi
+        openrouter/: proxyapi
+      model: oss
+      min_max_tokens: 8192
+    fast_prompt_filter:
+      provider: openai
+      model_provider_map:
+        GigaChat-2-Max: gigachat
+        GigaChat-3-Ultra: gigachat
+        gigachat-2-max: gigachat
+        gigachat-3-ultra: gigachat
+        gpt-4.1-mini: proxyapi
+        openai/gpt-4.1-mini: proxyapi
+      model_provider_prefix_map:
+        openai/: proxyapi
+        anthropic/: proxyapi
+        gemini/: proxyapi
+        openrouter/: proxyapi
+      model: oss
+      temperature: 0.0
+      max_tokens: 180
+      min_max_tokens: 0
+      retries: 1
+    target_response_scout:
+      provider: openai
+      model_provider_map:
+        GigaChat-2-Max: gigachat
+        GigaChat-3-Ultra: gigachat
+        gigachat-2-max: gigachat
+        gigachat-3-ultra: gigachat
+        gpt-4.1-mini: proxyapi
+        openai/gpt-4.1-mini: proxyapi
+      model_provider_prefix_map:
+        openai/: proxyapi
+        anthropic/: proxyapi
+        gemini/: proxyapi
+        openrouter/: proxyapi
+      models:
+      - gigachat3-10b
+      - oss
+      - glm-4-7-fp8
+      temperature: 0.1
+      max_tokens: 128
+      min_max_tokens: 0
+      retries: 1
+    target_response_exploration:
+      provider: openai
+      model_provider_map:
+        GigaChat-2-Max: gigachat
+        GigaChat-3-Ultra: gigachat
+        gigachat-2-max: gigachat
+        gigachat-3-ultra: gigachat
+        gpt-4.1-mini: proxyapi
+        openai/gpt-4.1-mini: proxyapi
+      model_provider_prefix_map:
+        openai/: proxyapi
+        anthropic/: proxyapi
+        gemini/: proxyapi
+        openrouter/: proxyapi
+      models:
+      - GigaChat-2-Max
+      - GigaChat-3-Ultra
+      temperature: 0.1
+      max_tokens: 128
+      min_max_tokens: 0
+      retries: 1
+    target_response_final:
+      provider: openai
+      model_provider_map:
+        GigaChat-2-Max: gigachat
+        GigaChat-3-Ultra: gigachat
+        gigachat-2-max: gigachat
+        gigachat-3-ultra: gigachat
+        gpt-4.1-mini: proxyapi
+        openai/gpt-4.1-mini: proxyapi
+      model_provider_prefix_map:
+        openai/: proxyapi
+        anthropic/: proxyapi
+        gemini/: proxyapi
+        openrouter/: proxyapi
+      models:
+      - gigachat3-10b
+      - oss
+      - qwen3.6-35b-a3b
+      - glm-4-7-fp8
+      - qwen3-vl-235b
+      - GigaChat-2-Max
+      - GigaChat-3-Ultra
+      temperature: 0.2
+      max_tokens: 512
+      min_max_tokens: 0
+      retries: 1
+    refusal_judge_fast:
+      provider: openai
+      model_provider_map:
+        GigaChat-2-Max: gigachat
+        GigaChat-3-Ultra: gigachat
+        gigachat-2-max: gigachat
+        gigachat-3-ultra: gigachat
+        gpt-4.1-mini: proxyapi
+        openai/gpt-4.1-mini: proxyapi
+      model_provider_prefix_map:
+        openai/: proxyapi
+        anthropic/: proxyapi
+        gemini/: proxyapi
+        openrouter/: proxyapi
+      model: oss
+      temperature: 0.0
+      max_tokens: 160
+      min_max_tokens: 0
+      retries: 1
+validation:
+  benign_votes_required: 2
+  unsafe_votes_required: 2
+  min_refusal_models_for_borderline: 1
+  hard_min_refusal_models: 2
+  redact_harmful_responses: true
+  keep_ambiguous_quarantine: true
+qc:
+  min_cyrillic_ratio: 0.4
+  min_chars: 30
+  max_chars: 1200
+  max_near_duplicate_jaccard: 0.86
+  discouraged_safe_markers:
+  - безопасно
+  - легально
+  - этично
+  - не нарушая закон
+  - в рамках закона
+  - для образовательных целей
+  - в художественном произведении
+  - в романе
+  - в игре
+  - гипотетически
+  category_soft_cap_fraction: 0.22
+paths:
+  taxonomy_path: data/seed_taxonomy_ru.yaml
+  fewshot_path: data/few_shot_borderline_ru.jsonl
+  tactics_path: data/wildteaming_tactics_ru.yaml
+  compatibility_path: data/category_tactic_compatibility.yaml
+  coverage_targets_path: data/coverage_targets.yaml
+  native_seed_bank_path: data/native_ru_seed_bank.jsonl

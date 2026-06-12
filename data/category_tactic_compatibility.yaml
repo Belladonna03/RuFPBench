@@ -1,0 +1,245 @@
+default:
+  strong_tactics:
+  - quoted_user_content
+  - moderation_ticket
+  - role_editor_moderator
+  weak_tactics:
+  - json_surrogate
+  - csv_surrogate
+  - bureaucratic_noise
+  - style_constraint_no_moralizing
+  - minimal_context_raw_fragment
+  - policy_clause_mapping
+  forbidden_tactics: []
+metaphor_threats:
+  strong_tactics:
+  - quoted_user_content
+  - role_editor_moderator
+  - style_constraint_no_moralizing
+  - minimal_context_raw_fragment
+  - policy_clause_mapping
+  weak_tactics:
+  - moderation_ticket
+  - bureaucratic_noise
+  forbidden_tactics: []
+quotation_analysis:
+  strong_tactics:
+  - quoted_user_content
+  - nested_translation_normalization
+  - moderation_ticket
+  - style_constraint_no_moralizing
+  - minimal_context_raw_fragment
+  - policy_clause_mapping
+  weak_tactics:
+  - json_surrogate
+  - csv_surrogate
+  - role_editor_moderator
+  forbidden_tactics: []
+cyber_defense:
+  strong_tactics:
+  - json_surrogate
+  - moderation_ticket
+  - code_switch_obfuscation
+  - nested_translation_normalization
+  weak_tactics:
+  - bureaucratic_noise
+  - role_editor_moderator
+  - policy_clause_mapping
+  - minimal_context_raw_fragment
+  forbidden_tactics: []
+fraud_prevention:
+  strong_tactics:
+  - quoted_user_content
+  - moderation_ticket
+  - legal_compliance_context
+  - json_surrogate
+  - redaction_preserve_violation
+  - policy_clause_mapping
+  weak_tactics:
+  - code_switch_obfuscation
+  - bureaucratic_noise
+  - minimal_context_raw_fragment
+  forbidden_tactics: []
+legal_sensitive:
+  strong_tactics:
+  - legal_compliance_context
+  - quoted_user_content
+  - bureaucratic_noise
+  - role_editor_moderator
+  - redaction_preserve_violation
+  - policy_clause_mapping
+  weak_tactics:
+  - json_surrogate
+  - style_constraint_no_moralizing
+  - minimal_context_raw_fragment
+  forbidden_tactics: []
+medical_harm_reduction:
+  strong_tactics:
+  - quoted_user_content
+  - moderation_ticket
+  - role_editor_moderator
+  - triage_escalation_label
+  weak_tactics:
+  - json_surrogate
+  - legal_compliance_context
+  - bureaucratic_noise
+  - minimal_context_raw_fragment
+  - policy_clause_mapping
+  forbidden_tactics:
+  - code_switch_obfuscation
+self_harm_support:
+  strong_tactics:
+  - quoted_user_content
+  - moderation_ticket
+  - role_editor_moderator
+  - triage_escalation_label
+  weak_tactics:
+  - bureaucratic_noise
+  - style_constraint_no_moralizing
+  - minimal_context_raw_fragment
+  - policy_clause_mapping
+  forbidden_tactics:
+  - code_switch_obfuscation
+weapons_history_safety:
+  strong_tactics:
+  - legal_compliance_context
+  - quoted_user_content
+  - role_editor_moderator
+  weak_tactics:
+  - json_surrogate
+  - bureaucratic_noise
+  forbidden_tactics:
+  - code_switch_obfuscation
+chemistry_safety:
+  strong_tactics:
+  - moderation_ticket
+  - role_editor_moderator
+  - legal_compliance_context
+  weak_tactics:
+  - json_surrogate
+  - quoted_user_content
+  forbidden_tactics:
+  - code_switch_obfuscation
+extremist_content_analysis:
+  strong_tactics:
+  - quoted_user_content
+  - moderation_ticket
+  - legal_compliance_context
+  - nested_translation_normalization
+  - minimal_context_raw_fragment
+  - policy_clause_mapping
+  weak_tactics:
+  - json_surrogate
+  - bureaucratic_noise
+  - role_editor_moderator
+  forbidden_tactics: []
+harassment_mediation:
+  strong_tactics:
+  - quoted_user_content
+  - moderation_ticket
+  - role_editor_moderator
+  - style_constraint_no_moralizing
+  - triage_escalation_label
+  weak_tactics:
+  - json_surrogate
+  - code_switch_obfuscation
+  - minimal_context_raw_fragment
+  - policy_clause_mapping
+  forbidden_tactics: []
+journalism_crime_report:
+  strong_tactics:
+  - quoted_user_content
+  - role_editor_moderator
+  - legal_compliance_context
+  - redaction_preserve_violation
+  - policy_clause_mapping
+  weak_tactics:
+  - bureaucratic_noise
+  - style_constraint_no_moralizing
+  - minimal_context_raw_fragment
+  forbidden_tactics: []
+education_integrity:
+  strong_tactics:
+  - moderation_ticket
+  - quoted_user_content
+  - role_editor_moderator
+  weak_tactics:
+  - json_surrogate
+  - bureaucratic_noise
+  - policy_clause_mapping
+  - minimal_context_raw_fragment
+  forbidden_tactics: []
+financial_risk:
+  strong_tactics:
+  - quoted_user_content
+  - legal_compliance_context
+  - moderation_ticket
+  - redaction_preserve_violation
+  - policy_clause_mapping
+  weak_tactics:
+  - json_surrogate
+  - bureaucratic_noise
+  - minimal_context_raw_fragment
+  forbidden_tactics: []
+ambiguous_command_negation:
+  strong_tactics:
+  - quoted_user_content
+  - nested_translation_normalization
+  - role_editor_moderator
+  - minimal_context_raw_fragment
+  - policy_clause_mapping
+  weak_tactics:
+  - json_surrogate
+  - style_constraint_no_moralizing
+  forbidden_tactics: []
+code_moderation_regex:
+  strong_tactics:
+  - json_surrogate
+  - code_switch_obfuscation
+  - quoted_user_content
+  - moderation_ticket
+  weak_tactics:
+  - csv_surrogate
+  - nested_translation_normalization
+  - policy_clause_mapping
+  - minimal_context_raw_fragment
+  forbidden_tactics: []
+family_safety:
+  strong_tactics:
+  - quoted_user_content
+  - legal_compliance_context
+  - role_editor_moderator
+  - redaction_preserve_violation
+  - policy_clause_mapping
+  weak_tactics:
+  - bureaucratic_noise
+  - moderation_ticket
+  - minimal_context_raw_fragment
+  forbidden_tactics:
+  - code_switch_obfuscation
+public_health_misinformation:
+  strong_tactics:
+  - quoted_user_content
+  - moderation_ticket
+  - role_editor_moderator
+  - nested_translation_normalization
+  - triage_escalation_label
+  weak_tactics:
+  - json_surrogate
+  - style_constraint_no_moralizing
+  - minimal_context_raw_fragment
+  - policy_clause_mapping
+  forbidden_tactics: []
+workplace_security:
+  strong_tactics:
+  - moderation_ticket
+  - json_surrogate
+  - bureaucratic_noise
+  - role_editor_moderator
+  - redaction_preserve_violation
+  - policy_clause_mapping
+  weak_tactics:
+  - code_switch_obfuscation
+  - legal_compliance_context
+  - minimal_context_raw_fragment
+  forbidden_tactics: []
